@@ -478,6 +478,18 @@
     const k = opts.scale || detectScale(rgba, w, h);
     let img = { rgba, w, h }; if (k > 1) img = downscale(rgba, w, h, k);
     if (img.w < 32 || img.h < 32) throw new Error(`image is ${img.w}x${img.h} after dividing by ${k}; a piece needs 32x32`);
+    if (opts.offsetX || opts.offsetY) { // take a 32x32 window out of a larger image (multi-piece objects)
+      const ox = opts.offsetX || 0, oy = opts.offsetY || 0, win = new Uint8ClampedArray(32 * 32 * 4);
+      for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) { const so = ((oy + y) * img.w + ox + x) * 4, d = (y * 32 + x) * 4; for (let c = 0; c < 4; c++) win[d + c] = img.rgba[so + c]; }
+      img = { rgba: win, w: 32, h: 32 };
+    }
+    if (opts.underCid != null) { // composite over another piece's pixels (an object standing on existing pavement)
+      const under = new Uint8ClampedArray(32 * 32 * 4); const uL = opts.underLayer == null ? L : opts.underLayer;
+      paintMetatile(level, level.layers[uL], opts.underCid, true, under);
+      const comp = new Uint8ClampedArray(32 * 32 * 4);
+      for (let i = 0; i < 32 * 32; i++) { const o = i * 4; const src = img.rgba; if (isKey(src[o], src[o + 1], src[o + 2], src[o + 3])) { for (let c = 0; c < 4; c++) comp[o + c] = under[o + c]; } else { for (let c = 0; c < 4; c++) comp[o + c] = src[o + c]; } }
+      img = { rgba: comp, w: 32, h: 32 };
+    }
     const lay = level.layers[L], palette = out.palette, tileData = out.tileData;
     let banks;
     if (opts.palette && typeof opts.palette === "object") {
