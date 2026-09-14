@@ -18,15 +18,18 @@ automatically by Claude Code when this repository is open. To use it elsewhere, 
 | `references/compression.md` | GBA LZ77 / Huffman / RLE bit layouts, chained formats, locating compressed assets, re-compression strategy |
 | `references/code-analysis.md` | Reading and changing code: Ghidra setup, mGBA GDB bridge, literal pools and Thumb/ARM mode pitfalls, decompilation projects |
 | `references/patching.md` | Free space, pointer redirects, `bl` hooks with Thumb→ARM stubs, hand-assembly encodings, verification, distribution |
+| `references/headless-emulation.md` | Running a game with no display: building libmgba, scripted input, memory/IO dumps, watchpoints via the debugger API, calling the game's own decoder as an oracle |
 | `references/klonoa-case-study.md` | The complete worked example: every table, structure, address and the loader patch from klo-gba.js |
+| `references/urbz-case-study.md` | Second worked example: a licensed title with custom IWRAM decompressors, a header-nibble dispatcher, structure-of-arrays metatiles and a VRAM tile cache, verified pixel-exact |
 | `scripts/gba_compress.py` | Decode/encode/scan GBA BIOS compression formats |
 | `scripts/gba_rom.py` | ROM header, pointer hunting, table dumps, free-space finder, hex dumps |
 | `scripts/thumb_patch.py` | Hand-assemble Thumb/ARM branches and literal loads; generate hook stubs |
 | `scripts/render_tiles.py` | Render tilesets and tilemaps to PNG |
 | `scripts/test_scripts.py` | Self-test (`python3 scripts/test_scripts.py`), vectors include the real Klonoa patch bytes |
+| `scripts/emu/` | Headless mGBA tools (C): `harness` (scripted input + memory dumps), `trace` (watchpoints/breakpoints with registers), `oracle` (call a ROM routine on chosen inputs), `topng.py`, `build.sh` |
 | `evals/evals.json` | Prompts used to evaluate the skill |
 
-The scripts are plain Python 3 with no third-party dependencies.
+The Python scripts have no third-party dependencies. The `scripts/emu/` tools need a C compiler and cmake; `build.sh` clones and builds mGBA headless.
 
 ## Projects
 

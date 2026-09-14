@@ -1,13 +1,14 @@
 ---
 name: gba-reverse-engineering
-description: Reverse engineer Game Boy Advance games and build ROM hacks, level editors, or asset extractors from them. Use this whenever the user mentions a GBA ROM, .gba file, mGBA/No$GBA/VBA debugging, Ghidra or IDA on ARM7TDMI/Thumb code, pulling or decompiling the code out of a GBA game, GBA decomp projects, GBA tilemaps/tilesets/palettes/OAM/VRAM/DMA, BIOS decompression (LZ77 swi 0x11, Huffman, RLE), finding where a level or sprite lives in a ROM, patching or hooking GBA assembly, or wants a "level editor" / "ROM hack" / "extract the maps" for any GBA title, even if they never say "reverse engineering". Also use it for general questions about how GBA games store and load data.
+description: Reverse engineer Game Boy Advance games and build ROM hacks, level editors, or asset extractors from them. Use this whenever the user mentions a GBA ROM, .gba file, mGBA/No$GBA/VBA debugging, Ghidra or IDA on ARM7TDMI/Thumb code, pulling or decompiling the code out of a GBA game, GBA decomp projects, GBA tilemaps/tilesets/palettes/OAM/VRAM/DMA, BIOS decompression (LZ77 swi 0x11, Huffman, RLE), finding where a level or sprite lives in a ROM, patching or hooking GBA assembly, or wants a "level editor" / "ROM hack" / "extract the maps" for any GBA title, even if they never say "reverse engineering". Also use it when a game uses a custom compressor, when the game must be run headless (libmgba, no display) to dump memory or trace VRAM writes, and for general questions about how GBA games store and load data.
 ---
 
 # GBA reverse engineering
 
 This skill packages the method Bruno Macabeus documented while building klo-gba.js, a level editor for
 *Klonoa: Empire of Dreams* ("Reverse engineering a GameBoy Advance game — Complete Guide"), generalised to any GBA
-title, plus scripts for the recurring chores (decompression, pointer hunting, hand-assembling patches, rendering tiles).
+title, plus scripts for the recurring chores (decompression, pointer hunting, hand-assembling patches, rendering tiles),
+and a second worked example (The Urbz) where the game uses its own compressor and a VRAM tile cache.
 
 Nothing about a specific game is documented, but the *platform* is, exhaustively. Every step below turns a hardware
 fact (how VRAM, DMA, the BIOS and the cartridge bus work) into a question a debugger can answer. That is why an
@@ -59,7 +60,9 @@ Load the one that matches the current step; each is self-contained.
 | Compressed data: headers, LZ77/Huffman/RLE bit layouts, chained formats, scanning a ROM | `references/compression.md` |
 | To read or change the *code*: Ghidra setup, mGBA GDB bridge, literal pools, Thumb/ARM mode errors, decomp projects | `references/code-analysis.md` |
 | To modify the ROM: free space, pointer redirects, `bl` hooks, Thumb→ARM stubs, encodings | `references/patching.md` |
+| To run the game with no display: build libmgba, script inputs, dump memory/IO, trace VRAM writes, call the game's own decoder as an oracle | `references/headless-emulation.md` |
 | A complete worked example with every address, table, struct and the loader patch (Klonoa) | `references/klonoa-case-study.md` |
+| A second worked example: custom IWRAM decoders, a header-nibble dispatcher, structure-of-arrays metatiles, a tile cache, pixel-exact verification (The Urbz) | `references/urbz-case-study.md` |
 
 ## Scripts (Python 3, no dependencies)
 
@@ -71,6 +74,7 @@ Run `python3 scripts/test_scripts.py` once if in doubt; the vectors include the 
 | `scripts/gba_rom.py` | `header`, `pointers` (who references an offset), `table` (dump fixed-stride records with typed fields), `freespace`, `dump`, `u16/u32` |
 | `scripts/thumb_patch.py` | Encode Thumb `bl`/`b`, ARM `b`, pc-relative `ldr` for both states, the Thumb→ARM stub, and a full `hook` recipe with file offsets |
 | `scripts/render_tiles.py` | Render 4bpp/8bpp tiles + BGR555 palette to PNG: tileset sheets, byte-indexed or screen-entry tilemaps, palette swatches |
+| `scripts/emu/` | Headless mGBA tools (C, built by `build.sh` against libmgba): `harness` runs scripted input and dumps RAM/VRAM/palette/OAM/IO, `trace` logs watchpoint/breakpoint hits with registers, `oracle` calls a ROM routine on chosen inputs, `topng.py` renders a dumped frame |
 
 All scripts accept bus addresses (`0x081B27FC`) or file offsets (`0x1B27FC`).
 
@@ -103,6 +107,18 @@ Cite evidence for every row (the breakpoint that fired, the value that changed).
 - Thumb `bl` clobbers `lr`; pc reads +4 in Thumb and +8 in ARM; ARM code must be word aligned; `bx` needs bit 0 set for Thumb targets.
 - Disassembly that reads as nonsense is almost always the wrong mode (set Thumb) or a literal pool (data after the function), not encryption.
 - Region/revision moves every address. Pin the dump by SHA-1 and say so in the deliverable.
+- A custom decoder that runs from IWRAM is invisible to ROM pointer searches; find the boot-time copy loop to learn which
+  ROM bytes it came from, and prove your translation by calling the game's routine on the same input (the oracle pattern).
+  "Decodes to the declared size" does not catch an inverted branch condition or a wrong flag bit.
+- Games with a VRAM tile cache break "VRAM tile index = asset tile index"; resolve through the cache table or compare pixels.
+- Metatile tables may be structure-of-arrays (all tile refs, then all attributes); an array-of-structs reading parses fine
+  and renders plausible garbage. Verify against the running frame, cell by cell, before trusting a renderer.
+- Adjacent records often share graphics. Identify the loaded record by its least-shared data (the map), not by its tiles,
+  or you will invent a remap table that does not exist.
+- Static plausibility scores (edge continuity, transparency) are fooled by self-similar tiles. Emulator evidence wins.
+- An isometric look does not imply isometric data; check the map walker before modelling geometry.
+- When hijacking the CPU in libmgba use `ThumbWritePC` for Thumb targets, re-prime the pipeline, and step to ROM code in
+  System mode first; `ARMWritePC` from Thumb or writing registers mid-BIOS crashes the core.
 - Legal and practical: work on the user's own dump, never distribute ROMs, ship patches or an editor. Buying the game
   keeps the franchise alive, which is why editors like klo-gba.js ask for it.
 
@@ -110,4 +126,5 @@ Cite evidence for every row (the breakpoint that fired, the value that changed).
 
 Method and case study from Bruno Macabeus's series (Medium: "Reverse engineering a GameBoy Advance game — Complete Guide",
 Parts 1-8, Introduction and Final Part) and the MIT-licensed `macabeus/klo-gba.js`; compression tools in the original
-project were CUE's LZSS/Huffman encoders, reimplemented here in Python. Hardware facts follow GBATEK and Tonc.
+project were CUE's LZSS/Huffman encoders, reimplemented here in Python. Hardware facts follow GBATEK and Tonc. The Urbz
+case study and the headless tools come from applying this skill in the repository's `projects/urbz/`; the emulator is mGBA (MPL 2.0).
