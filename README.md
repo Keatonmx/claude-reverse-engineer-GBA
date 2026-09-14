@@ -32,4 +32,4 @@ The scripts are plain Python 3 with no third-party dependencies.
 
 | Path | What |
 |---|---|
-| `projects/urbz/` | First application of the skill: static survey of *The Urbz: Sims in the City* (GBA). `FINDINGS.md` documents the ROM layout, the resource loader, the two custom IWRAM decompressors (type 6 fully translated in `urbz_codec.py`), the 7,682-record resource directory, and a ranked list of hack ideas. `urbz_dump.py` exports every graphics resource. ROMs are git-ignored; bring your own dump. |
+| `projects/urbz/` | First application of the skill: static survey of *The Urbz: Sims in the City* (GBA). `FINDINGS.md` documents the ROM layout, the resource loader, the two custom IWRAM decompressors (type 6 fully translated in `urbz_codec.py`), the 7,682-record resource directory, and a ranked list of hack ideas. `urbz_dump.py` exports every graphics resource; `urbz_level.py` parses the 75 district records and renders their layers. ROMs are git-ignored; bring your own dump. |

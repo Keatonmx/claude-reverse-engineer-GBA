@@ -5,7 +5,7 @@ The engine's resource loader (ROM 0x1EC00) reads a 4-byte header `type:4 | flags
   0 raw copy, 1 LZ77 (BIOS), 2 Huffman (BIOS), 3 RLE (BIOS),
   4 -> decoder A (ROM 0xD274, copied to IWRAM 0x03003530), source includes the header,
   6 -> decoder B (ROM 0x2EC,  copied to IWRAM 0x030031D0), source starts after the header.
-Bit 3 of the type nibble requests a post-filter (ROM 0x1EE00) which is not implemented here.
+Bit 3 of the type nibble (header byte bit 7, e.g. 0xE0 = type 6 + filter) requests the Diff16 post-filter (ROM 0x1EE00).
 
 Both decoders below are straight translations of the ARM routines; see FINDINGS.md for the disassembly notes.
 """
@@ -144,8 +144,27 @@ def decode_type4(data: bytes, offset: int) -> bytes:
     return bytes(out[:size])
 
 
+def unfilter16(data: bytes) -> bytes:
+    """Post-filter selected by header flag bit 3 (ROM 0x1EE00): running sum over little-endian halfwords."""
+    out = bytearray(data)
+    n = len(out) // 2
+    acc = 0
+    for i in range(n):
+        acc = (acc + (out[2 * i] | (out[2 * i + 1] << 8))) & 0xFFFF
+        out[2 * i] = acc & 0xFF
+        out[2 * i + 1] = acc >> 8
+    return bytes(out)
+
+
 def decode(data: bytes, offset: int) -> tuple[bytes, str]:
-    """Decode any resource by its header type. Returns (bytes, format name)."""
+    """Decode any resource by its header type (applies the flag-8 post-filter). Returns (bytes, format name)."""
+    out, kind = _decode_raw(data, offset)
+    if data[offset] & 0x80:  # bit 3 of the type nibble
+        out, kind = unfilter16(out), kind + "+diff16"
+    return out, kind
+
+
+def _decode_raw(data: bytes, offset: int) -> tuple[bytes, str]:
     sys.path.insert(0, "/home/user/claude-reverse-engineer-GBA/.claude/skills/gba-reverse-engineering/scripts")
     import gba_compress as gc
     t = data[offset] >> 4

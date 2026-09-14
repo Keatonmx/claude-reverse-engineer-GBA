@@ -34,7 +34,7 @@ through the table at `0x1EC2C`:
 | 4 | **custom decoder A** via function pointer at IWRAM `0x030031C0` | code copied from ROM `0xD274` (528 bytes) to IWRAM `0x03003530` by the init at `0x1ECD0`; source pointer includes the header |
 | 6 | **custom decoder B** via function pointer at IWRAM `0x03003520` | code copied from ROM `0x2EC` (848 bytes) to IWRAM `0x030031D0`; source pointer skips the header |
 | 5, 7, 8 | no-op | |
-| flag bit 3 (`0x8`) | post-filter at `0x0801EE00` applied to the output | *likely* a delta/diff filter, not yet translated |
+| flag bit 3 of the nibble (header byte `0x80`, e.g. `0xE0` = type 6 + filter) | post-filter at `0x0801EE00` applied to the output | **confirmed**: 16-bit running sum (Diff16 unfilter), implemented as `unfilter16` |
 
 BIOS wrapper stubs (each `swi N; bx lr`): CpuFastSet `0x6B36C`, CpuSet `0x6B370`, Div `0x6B374`, Huff `0x6B380`,
 LZ77Vram `0x6B384`, LZ77Wram `0x6B388`, ObjAffineSet `0x6B38C`, RLVram `0x6B390`, RLWram `0x6B394`, Sqrt `0x6B398`,
@@ -72,6 +72,23 @@ go through a lighting stage before reaching hardware. Finding the palette source
   `0x92000` shows repeated rows of five function pointers + a flags word (`01 01 00 05`) = object/state dispatch tables.
 - **Item table** at `0x75000`: 20-byte records `{ptr → 0x149xxxx descriptor, 5 bytes of parameters (10/21/21/21/21, 50/6/6/6/6…), pad, u32 id}`
   with sequential ids `0x3D6, 0x3D7, …`.
+- **Level / district records** (confirmed layout, 75 records of 80 bytes at `0x73590 + k*0x50`, `urbz_level.py list`):
+
+  | Offset | Content |
+  |---|---|
+  | `+0x08` | collision metatiles: type 6, 16 bytes each (values `03`, `43`, `12`, `13`, `10`, `11`, `00`: walkability/edge codes) |
+  | `+0x0C` | collision map: type 6, `u16 metatile_count` (matches +0x08 exactly), 3 words, then u16 metatile ids (e.g. 38x20 for record `0x735E0`) |
+  | `+0x18` | small raw descriptor |
+  | `+0x1C` | **tile pixel bank**: type 0 (raw), 62 KB to 610 KB of 4bpp 8x8 tiles; ends exactly at the next pointer's target |
+  | `+0x20` | 0xFFFF-filled table (*likely* the tile→VRAM cache map the engine fills at runtime) |
+  | `+0x28/+0x2C`, `+0x38/+0x3C`, `+0x48/+0x4C` | three layers of (map, metatiles): map = type 6 + Diff16, `u16 w, u16 h` (32x30) then w*h u16 metatile ids; metatiles = type 6 (+Diff16), `u16 count`, `u16 0`, then count x 24 u16 tile refs |
+
+  The 24 refs per metatile form a 64x32 isometric diamond (4 + 8 + 8 + 4 tiles; the id sequences make the two 8-wide rows
+  unambiguous). What is *not* settled statically is how a tile ref maps into the bank: refs use bits 0-13 (max `0x3C0C`),
+  the bank holds ~19,000 4bpp tiles, and renders with `index = ref & 0x3FFF` show real, internally coherent tiles that do not
+  join at their edges, so either the bank has an extra prefix, refs are relative to per-page loads, or bits 10-13 are a
+  palette/page selector. One watchpoint on VRAM charblock writes while a district loads will settle it (the routine reads
+  the +0x20 table). `urbz_level.py render` implements the current best guess for that final step.
 - **Text**: no ASCII anywhere (`strings` finds nothing but the header and the save signature), so the six-language script uses
   a font-index encoding and is *likely* stored as large blobs referenced from code rather than from the directory
   (search still open; candidates are the 122 large type-4/6 blobs referenced from code).
@@ -93,15 +110,18 @@ go through a lighting stage before reaching hardware. Finding the palette source
    pointer change. Money/skill gain constants live in the functions those tables reference.
 5. **Lighting and palette hacks** — *hours*. The remap LUT used by `0x08015E58` controls tint; patching it yields
    night/sepia/colour-blind modes without touching any asset.
-6. **New rooms/levels** — *weeks*. Map data has not been located yet (it is not in the sprite directory); the route is a
-   VRAM watchpoint on a background layer in mGBA → DMA source → loader → directory entry, exactly the Klonoa path.
+6. **District/level editor** — *a week or two*. The level record, collision layer, three visual layers, metatile diamonds and
+   the raw tile bank are all located and decoded; the one unresolved detail is the tile-ref → bank mapping (one debugger
+   session). Collision edits are already possible today: the collision map is a plain u16 grid over 16-byte metatiles, so
+   walls/walkable areas can be moved with `urbz_codec` + a type-6 encoder or by storing the edited map as BIOS LZ77 (type 1).
 7. **Sound replacement** — *weeks*. Custom driver, raw 8-bit PCM at `0x1100000+`; sample swaps are feasible once the
    sample table is found, music sequencing would need the driver reversed.
 
 ## 6. Next debugger session (mGBA)
 
 1. Break on `0x0801EC00` (loader) with a save state in a district; log r0 (source) for every call → maps directory records
-   to on-screen objects and finds the map/tilemap loads and the font.
+   to on-screen objects and finds the font. Then `watch/w 0x06000000` (charblock 0) after a district load to catch the
+   tile-bank → VRAM copy and read how the tile ref is turned into a bank offset (the +0x20 table is the cache map).
 2. Watchpoint `watch/w 0x05000200` → caller of the palette remap → palette source table.
 3. Watchpoint on `0x030031C0`/`0x03003520` writes confirms the IWRAM decoder install at boot.
 4. Dump SRAM after a save, diff with the `0x9A2E4` template.
@@ -110,3 +130,4 @@ go through a lighting stage before reaching hardware. Finding the palette source
 
 - `urbz_codec.py` — decoders for header types 0-4 and 6 (`decode(rom, offset)`), CLI: `urbz_codec.py rom.gba 0xA054D4 out.bin`
 - `urbz_dump.py` — directory parser and exporter (`list`, `png`, `raw`)
+- `urbz_level.py` — level record parser and layer renderer (`list`, `render --layer N --crop --origin --zoom`)
