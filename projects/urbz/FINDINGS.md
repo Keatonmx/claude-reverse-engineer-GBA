@@ -83,12 +83,17 @@ go through a lighting stage before reaching hardware. Finding the palette source
   | `+0x20` | 0xFFFF-filled table (*likely* the tile→VRAM cache map the engine fills at runtime) |
   | `+0x28/+0x2C`, `+0x38/+0x3C`, `+0x48/+0x4C` | three layers of (map, metatiles): map = type 6 + Diff16, `u16 w, u16 h` (32x30) then w*h u16 metatile ids; metatiles = type 6 (+Diff16), `u16 count`, `u16 0`, then count x 24 u16 tile refs |
 
-  The 24 refs per metatile form a 64x32 isometric diamond (4 + 8 + 8 + 4 tiles; the id sequences make the two 8-wide rows
-  unambiguous). What is *not* settled statically is how a tile ref maps into the bank: refs use bits 0-13 (max `0x3C0C`),
-  the bank holds ~19,000 4bpp tiles, and renders with `index = ref & 0x3FFF` show real, internally coherent tiles that do not
-  join at their edges, so either the bank has an extra prefix, refs are relative to per-page loads, or bits 10-13 are a
-  palette/page selector. One watchpoint on VRAM charblock writes while a district loads will settle it (the routine reads
-  the +0x20 table). `urbz_level.py render` implements the current best guess for that final step.
+  **Metatile geometry and tile refs (confirmed by edge-continuity scoring; true neighbours score 1.1-1.7 against 3.8 for
+  random tile pairs, calibrated on 16x16 sprites).** The 24 refs are rows of 8, 8, 4 and 4 tiles of a 64x32 block. The map
+  is drawn with a 16 px row pitch and each successive row shifted 32 px to the right, so the next row overdraws the
+  block's bottom-right quarter, which is why rows 2-3 only store their left 4 tiles. A tile ref is `bits 0-9` = tile
+  index into the first 1024 tiles of the bank (4bpp, 32 bytes each; all three layers use base 0), `bit 12` = vertical
+  flip, `bit 13` = horizontal flip, `bits 10-11` most likely the palette bank. The metatile blob header is
+  `{u16 count, u16 0, u16 x, u16 x}` with `x` = 0 (layer 1) or 6325 (layers 2-3); it is not a tile base. What the rest
+  of the 610 KB bank is for (only 32 KB is addressed by a 10-bit index) is still open: candidates are per-map-region
+  tile pages selected by the runtime cache table at +0x20, or graphics for other sub-areas of the district.
+  `urbz_level.py render --layer 0` composites the three layers and produces recognisable streets (curbs, pavement
+  stripes, road markings, street furniture) in greyscale.
 - **Text**: no ASCII anywhere (`strings` finds nothing but the header and the save signature), so the six-language script uses
   a font-index encoding and is *likely* stored as large blobs referenced from code rather than from the directory
   (search still open; candidates are the 122 large type-4/6 blobs referenced from code).
@@ -110,9 +115,9 @@ go through a lighting stage before reaching hardware. Finding the palette source
    pointer change. Money/skill gain constants live in the functions those tables reference.
 5. **Lighting and palette hacks** — *hours*. The remap LUT used by `0x08015E58` controls tint; patching it yields
    night/sepia/colour-blind modes without touching any asset.
-6. **District/level editor** — *a week or two*. The level record, collision layer, three visual layers, metatile diamonds and
-   the raw tile bank are all located and decoded; the one unresolved detail is the tile-ref → bank mapping (one debugger
-   session). Collision edits are already possible today: the collision map is a plain u16 grid over 16-byte metatiles, so
+6. **District/level editor** — *a week or two*. The level record, collision layer, three visual layers, metatile blocks,
+   tile refs and the raw tile bank are all decoded and render as recognisable streets; what is missing is the palette
+   (for colour) and the meaning of the bank's remaining pages. Collision edits are already possible today: the collision map is a plain u16 grid over 16-byte metatiles, so
    walls/walkable areas can be moved with `urbz_codec` + a type-6 encoder or by storing the edited map as BIOS LZ77 (type 1).
 7. **Sound replacement** — *weeks*. Custom driver, raw 8-bit PCM at `0x1100000+`; sample swaps are feasible once the
    sample table is found, music sequencing would need the driver reversed.
@@ -121,7 +126,8 @@ go through a lighting stage before reaching hardware. Finding the palette source
 
 1. Break on `0x0801EC00` (loader) with a save state in a district; log r0 (source) for every call → maps directory records
    to on-screen objects and finds the font. Then `watch/w 0x06000000` (charblock 0) after a district load to catch the
-   tile-bank → VRAM copy and read how the tile ref is turned into a bank offset (the +0x20 table is the cache map).
+   tile-bank → VRAM copy: it tells which bank pages beyond the first 1024 tiles are used and when (the +0x20 table is the
+  cache map), and a `watch/w 0x05000000` gives the background palette source.
 2. Watchpoint `watch/w 0x05000200` → caller of the palette remap → palette source table.
 3. Watchpoint on `0x030031C0`/`0x03003520` writes confirms the IWRAM decoder install at boot.
 4. Dump SRAM after a save, diff with the `0x9A2E4` template.

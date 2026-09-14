@@ -2,16 +2,21 @@
 """Render district/level layers from The Urbz (GBA) using the record format documented in FINDINGS.md.
 
     urbz_level.py list   rom.gba                       # level records (80-byte entries at 0x73598 + k*0x50)
-    urbz_level.py render rom.gba <record_offset> out.png [--layer 1|2|3] [--crop CW CH] [--origin CX CY] [--zoom N] [--grid]
+    urbz_level.py render rom.gba <record_offset> out.png [--layer 0|1|2|3] [--crop CW CH] [--origin CX CY] [--zoom N] [--grid]
+       (--layer 0 = composite of all three; default 1)
 
 Level record (file offsets, 80 bytes):
   +0x08 collision metatiles (type 6, 16 bytes each)   +0x0C collision map (type 6: u16 count, 3 words, u16 cells)
   +0x1C raw tile pixel bank (type 0, 4bpp 8x8 tiles)   +0x20 tile cache table (0xFFFF-filled)
   +0x28/+0x2C, +0x38/+0x3C, +0x48/+0x4C: three layers of (map, metatiles):
      map       = type 6 + Diff16: u16 width, u16 height, then width*height u16 metatile ids
-     metatiles = type 6 (+Diff16): u16 count, u16 0, then count * 24 u16 tile refs (bits 0-13 tile index into the bank,
-                 bit 14/15 flips - assumed). The 24 refs form a 64x32 isometric diamond: 4 top, 8, 8, 4 bottom.
-Palettes are not yet located, so output is greyscale by colour index.
+     metatiles = type 6 (+Diff16): u16 count, u16 0, u16 x, u16 x (x = 0 or 6325, meaning unknown), then count * 24 u16 refs:
+                 bits 0-9 tile index into the first 1024 tiles of the bank, bit 12 vertical flip, bit 13 horizontal flip,
+                 bits 10-11 presumably palette. The 24 refs are rows of 8, 8, 4, 4 tiles of a 64x32 block; the map is
+                 drawn with a 16 px row pitch and each row shifted 32 px right (the next row overdraws the block's
+                 bottom-right quarter, which is why only 4 tiles are stored for rows 2-3).
+Palettes are not yet located, so output is greyscale by colour index. Verified by tile-edge continuity scoring:
+neighbouring tiles score ~1.1-1.7 against 3.8 for random pairs (see FINDINGS.md).
 """
 import os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -25,8 +30,8 @@ STRIDE = 0x50
 GRAY = [(i * 16, i * 16, i * 16) for i in range(16)]
 POS = {}
 for k in range(4):
-    POS[k] = (k, 1); POS[16 + k] = (4 + k, 1); POS[4 + k] = (k, 2); POS[20 + k] = (4 + k, 2)
-    POS[8 + k] = (2 + k, 0); POS[12 + k] = (2 + k, 3)
+    POS[k] = (k, 0); POS[16 + k] = (4 + k, 0); POS[4 + k] = (k, 1); POS[20 + k] = (4 + k, 1)
+    POS[8 + k] = (k, 2); POS[12 + k] = (k, 3)
 
 
 def ptr(rom, off):
@@ -57,32 +62,38 @@ def load_level(rom, rec):
         tm, _ = uc.decode(rom, m); mt, _ = uc.decode(rom, t)
         w, h = struct.unpack_from("<HH", tm, 0)
         cells = struct.unpack_from("<%dH" % (w * h), tm, 4)
-        n = struct.unpack_from("<H", mt, 0)[0]
+        n, _, hdr2, _ = struct.unpack_from("<4H", mt, 0)
         metas = [struct.unpack_from("<24H", mt, 4 + i * 48) for i in range(n)]
-        layers.append((w, h, cells, metas))
+        layers.append((w, h, cells, metas, 0))  # tile base 0 scores best for every layer; hdr2 (0 or 6325) is not a base
     return tiles, layers
 
 
 def render(rom, rec, layer=1, crop=None, zoom=1, grid=False, origin=(0, 0)):
+    """layer: 1, 2, 3 or 0 for all three composited (later layers drawn over earlier ones)."""
     tiles, layers = load_level(rom, rec)
-    w, h, cells, metas = layers[layer - 1]
+    chosen = [layers[layer - 1]] if layer else [l for l in layers if l]
+    w, h = chosen[0][0], chosen[0][1]
     cw, ch = crop or (w, h)
     if grid:
         W, H = cw * 64, ch * 32
     else:
-        W, H = cw * 64 + 32, ch * 16 + 32
+        W, H = cw * 64 + 32 * ch + 32, ch * 16 + 32
     canvas = rt.blank_canvas(W, H)
     ox, oy = origin
-    for cy in range(min(ch, h - oy)):
-        for cx in range(min(cw, w - ox)):
-            m = metas[cells[(cy + oy) * w + cx + ox]]
-            px, py = (cx * 64, cy * 32) if grid else (cx * 64 + (32 if cy & 1 else 0), cy * 16)
-            for k, e in enumerate(m):
-                t = e & 0x3FFF
-                if t == 0 or t >= len(tiles):
-                    continue
-                tx, ty = POS[k]
-                rt.paint(canvas, px + tx * 8, py + ty * 8, tiles[t], GRAY, 0, bool(e & 0x4000), bool(e & 0x8000), False, 4)
+    for li, (w, h, cells, metas, tile_base) in enumerate(chosen):
+        for cy in range(min(ch, h - oy)):
+            for cx in range(min(cw, w - ox)):
+                m = metas[cells[(cy + oy) * w + cx + ox] & 0x3FF]
+                px, py = (cx * 64, cy * 32) if grid else (cx * 64 + 32 * cy, cy * 16)
+                for k, e in enumerate(m):
+                    t = e & 0x3FF
+                    if t == 0:
+                        continue
+                    t += tile_base
+                    if t >= len(tiles):
+                        continue
+                    tx, ty = POS[k]
+                    rt.paint(canvas, px + tx * 8, py + ty * 8, tiles[t], GRAY, 0, bool(e & 0x2000), bool(e & 0x1000), li == 0, 4)
     if zoom > 1:
         big = rt.blank_canvas(W * zoom, H * zoom)
         for y in range(H):
