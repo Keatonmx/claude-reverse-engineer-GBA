@@ -56,7 +56,9 @@ Design rules the patch illustrates:
   instruction(s) have no pc-relative dependency (a displaced `ldr rN,[pc,#x]` or a branch cannot be re-executed
   elsewhere as-is; move the hook or recompute the value).
 - **Re-execute what you displaced** at the end of the body, then `bx lr`. Returning with `bx lr` lands back in Thumb
-  because `bl` set bit 0 of `lr`.
+  because `bl` set bit 0 of `lr`. Mind the flags: Thumb `mov rd, rn` between low registers is really `adds rd, rn, #0`
+  and sets NZCV, so if the code after the hook branches on flags, re-execute it as ARM `adds` (`00 40 91 E2` for r4,r1),
+  not `mov`.
 - **Do the work in ARM** if you need pc-relative loads over a table or more registers; the 3-instruction stub
   (`mov r0,pc / add r0,#n / bx r0`) is the standard Thumb→ARM trampoline. Note it clobbers r0, which was fine here
   because the body recomputes r0 (`add r0, r5, #4`) from a register the loader still held.

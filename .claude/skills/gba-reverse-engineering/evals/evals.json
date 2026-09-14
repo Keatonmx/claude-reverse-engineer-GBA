@@ -5,19 +5,46 @@
       "id": 1,
       "prompt": "I have a dump of a GBA platformer (rom.gba, USA cart, I dumped it myself). In mGBA I can see the level's ground tiles on BG1 but when I edit them in the VRAM viewer they snap back next frame. I want to eventually build a level editor. Walk me through exactly how to get from that VRAM tile to the compressed level data in the ROM, including the breakpoints I should set and what registers to read, and how I'd confirm the compression format once I have an address.",
       "expected_output": "A step-by-step plan following the VRAM -> DMA/CPU copy -> WRAM -> decompressor (SWI r0/r1) -> ROM chain, with concrete mGBA watchpoint commands, mention of DMA source registers, BIOS SWI numbers and r0/r1 semantics, the 4-byte compression header meaning, and the bundled gba_compress.py usage. Should also mention pointer hunting and a findings log.",
-      "files": []
+      "files": [],
+      "assertions": [
+        "Explains that VRAM is refreshed each frame by a DMA or CPU copy and to set a write watchpoint on the VRAM address",
+        "Gives concrete mGBA debugger commands (watch/w, break, r/ or i)",
+        "Mentions reading the DMA source register (DMAxSAD / 0x040000Bx) or the load feeding the store to find the WRAM buffer",
+        "Explains catching the level load with a watchpoint on the WRAM buffer and landing in a BIOS SWI (0x11/0x12/0x13) with r0 = source, r1 = dest",
+        "Explains the 4-byte compression header (type nibble 0x10/0x2x/0x30 + 24-bit size) as the way to confirm the format",
+        "Mentions finding pointer tables that reference the asset (pointer hunting) to generalise to other levels",
+        "Recommends keeping a findings log / recording addresses with the ROM hash"
+      ]
     },
     {
       "id": 2,
       "prompt": "Here is a 16-byte blob I found at ROM offset 0x1B27FC in a GBA game: 10 73 62 00 00 01 02 03 04 05 06 07 F0 08 30 00. What format is it, how big is the decompressed data, and write me a Python decoder for this format that I can run on the whole block. Also: if I later modify the decompressed data and it gets bigger when I recompress it, what should I do?",
       "expected_output": "Identifies GBA BIOS LZ77 (type 0x10), decompressed size 0x6273 = 25203 bytes, explains flag byte/reference encoding (length = high nibble + 3, displacement = 12 bits + 1), provides a correct decoder (ideally reusing/pointing to scripts/gba_compress.py), and recommends relocating to free space plus pointer redirect or loader hook rather than in-place write.",
-      "files": []
+      "files": [],
+      "assertions": [
+        "Identifies GBA BIOS LZ77 (type 0x10)",
+        "States decompressed size 0x6273 = 25203 bytes",
+        "Correctly describes the token encoding: length = high nibble + 3, displacement = 12 bits + 1",
+        "Provides a working decoder script that decodes a valid LZ77 stream",
+        "Notes the 16-byte fragment is truncated and only yields 10 bytes",
+        "Recommends relocating a grown blob to free space and redirecting the pointer or hooking the loader instead of writing in place",
+        "Warns that in-place overwrite corrupts the following asset (the failure shows up elsewhere)"
+      ]
     },
     {
       "id": 3,
       "prompt": "I need to hook a Thumb function in a GBA ROM at bus address 0x08043B0C so it jumps to my own code which I'll put in the free space at 0x08367610, run some ARM code there that swaps a pointer, and then return. Give me the exact bytes to write at each address and explain the pitfalls (lr, displaced instructions, thumb vs arm). I don't have devkitARM installed.",
       "expected_output": "Correct Thumb BL encoding 23 F3 80 FD at file offset 0x43B0C, a Thumb->ARM stub (mov r0,pc; add r0,#n; bx r0 = 78 46 xx 30 00 47) at 0x367610, ARM body ending with re-executed displaced instruction and bx lr (1E FF 2F E1), notes on lr clobbering, pc+4/pc+8 semantics, word alignment, and ideally uses thumb_patch.py hook.",
-      "files": []
+      "files": [],
+      "assertions": [
+        "Gives the correct Thumb BL bytes 23 F3 80 FD at 0x08043B0C (file 0x43B0C)",
+        "Gives a Thumb-to-ARM stub at 0x08367610 of the form mov r0,pc / add r0,#n / bx r0 (78 46 nn 30 00 47) or an equivalent working state switch",
+        "ARM body returns with bx lr (1E FF 2F E1) and explains lr has bit 0 set so it returns to Thumb",
+        "Explains that the displaced 4 bytes at the hook site must be re-executed (and cannot be pc-relative)",
+        "Explains that BL clobbers lr and how to preserve it (push/pop) if the function needs it",
+        "Explains Thumb pc = insn+4 and ARM pc = insn+8 and the word-alignment requirement for ARM code",
+        "States file offset = bus address - 0x08000000"
+      ]
     }
   ]
 }

@@ -13,7 +13,7 @@ Usage examples
     gba_compress.py decompress rom.gba 0x1B27FC --chain -o level.bin    # keep peeling layers (e.g. Huffman then LZ77)
     gba_compress.py compress   level.bin --type lz77 --vram -o level.lz
     gba_compress.py compress   level.bin --type lz77,huffman -o level.huf   # apply LZ77 first, then Huffman (mirrors --chain)
-    gba_compress.py scan       rom.gba --min-size 256 --verify
+    gba_compress.py scan       rom.gba --min-size 256 --types lz77,huffman
 
 As a library:
     from gba_compress import lz77_decompress, lz77_compress, huffman_decompress, huffman_compress, rle_decompress, rle_compress
@@ -62,6 +62,11 @@ class DecompressError(ValueError):
 
 def lz77_decompress(data: bytes, offset: int = 0) -> bytes:
     """Decode a GBA LZ77 (type 0x10) block. Raises DecompressError on malformed input."""
+    return lz77_decompress_ex(data, offset)[0]
+
+
+def lz77_decompress_ex(data: bytes, offset: int = 0):
+    """Like lz77_decompress but returns (bytes, end_offset) so you know how long the compressed block is."""
     hdr = parse_header(data, offset)
     if not hdr or hdr[0] != "lz77":
         raise DecompressError("not an LZ77 header (expected 0x10)")
@@ -93,7 +98,7 @@ def lz77_decompress(data: bytes, offset: int = 0) -> bytes:
                     raise DecompressError("truncated LZ77 literal")
                 out.append(data[pos])
                 pos += 1
-    return bytes(out[:size])
+    return bytes(out[:size]), pos
 
 
 def lz77_compress(raw: bytes, vram_safe: bool = False) -> bytes:
@@ -155,6 +160,11 @@ def lz77_compress(raw: bytes, vram_safe: bool = False) -> bytes:
 
 def huffman_decompress(data: bytes, offset: int = 0) -> bytes:
     """Decode a GBA Huffman (type 0x2N) block; N is the symbol size in bits (4 or 8)."""
+    return huffman_decompress_ex(data, offset)[0]
+
+
+def huffman_decompress_ex(data: bytes, offset: int = 0):
+    """Like huffman_decompress but returns (bytes, end_offset)."""
     hdr = parse_header(data, offset)
     if not hdr or hdr[0] != "huffman":
         raise DecompressError("not a Huffman header (expected 0x24 or 0x28)")
@@ -200,7 +210,7 @@ def huffman_decompress(data: bytes, offset: int = 0) -> bytes:
                     break
             else:
                 node = child
-    return bytes(out[:size])
+    return bytes(out[:size]), stream_pos
 
 
 def _huffman_layout(freq: Counter):
@@ -298,6 +308,11 @@ def huffman_compress(raw: bytes, bits: int = 8) -> bytes:
 # ----------------------------------------------------------------------------- RLE
 
 def rle_decompress(data: bytes, offset: int = 0) -> bytes:
+    return rle_decompress_ex(data, offset)[0]
+
+
+def rle_decompress_ex(data: bytes, offset: int = 0):
+    """Like rle_decompress but returns (bytes, end_offset)."""
     hdr = parse_header(data, offset)
     if not hdr or hdr[0] != "rle":
         raise DecompressError("not an RLE header (expected 0x30)")
@@ -319,7 +334,7 @@ def rle_decompress(data: bytes, offset: int = 0) -> bytes:
             length = (flag & 0x7F) + 1
             out += data[pos:pos + length]
             pos += length
-    return bytes(out[:size])
+    return bytes(out[:size]), pos
 
 
 def rle_compress(raw: bytes) -> bytes:
@@ -354,6 +369,7 @@ def rle_compress(raw: bytes) -> bytes:
 # ----------------------------------------------------------------------------- generic
 
 DECODERS = {"lz77": lz77_decompress, "huffman": huffman_decompress, "rle": rle_decompress}
+DECODERS_EX = {"lz77": lz77_decompress_ex, "huffman": huffman_decompress_ex, "rle": rle_decompress_ex}
 
 
 def decompress(data: bytes, offset: int = 0, chain: bool = False):
@@ -386,26 +402,33 @@ def parse_address(text: str) -> int:
     return v
 
 
-def scan(data: bytes, min_size: int = 64, max_size: int = 4 << 20, verify: bool = True, align: int = 4):
-    """Yield (offset, type, size, ok) for plausible compressed blocks."""
+def scan(data: bytes, min_size: int = 64, max_size: int = 4 << 20, verify: bool = True, align: int = 4,
+         start: int = 0xC0, types=("lz77", "huffman", "rle")):
+    """Yield (offset, type, decompressed_size, compressed_length) for plausible compressed blocks.
+
+    With verify=True a block must decode cleanly *and* not inflate its input by more than 25% (a zero-filled
+    region that happens to parse as RLE inflates 2x; a Huffman layer over already-compressed data may inflate a little). compressed_length is None
+    when verify=False. Scanning starts after the 192-byte cartridge header by default. RLE parses almost
+    anything, so its hits are the noisiest; pass types=("lz77", "huffman") when hunting maps and graphics.
+    """
     n = len(data)
-    for off in range(0, n - 4, align):
+    off = start
+    while off < n - 4:
         hdr = parse_header(data, off)
-        if not hdr:
-            continue
-        kind, size, _ = hdr
-        if size < min_size or size > max_size:
-            continue
-        ok = None
-        if verify:
-            try:
-                DECODERS[kind](data, off)
-                ok = True
-            except DecompressError:
-                ok = False
-        if ok is False:
-            continue
-        yield off, kind, size, ok
+        if hdr and hdr[0] in types:
+            kind, size, _ = hdr
+            if min_size <= size <= max_size:
+                if not verify:
+                    yield off, kind, size, None
+                else:
+                    try:
+                        _, end = DECODERS_EX[kind](data, off)
+                        comp_len = end - off
+                        if comp_len <= size * 1.25 + 64:
+                            yield off, kind, size, comp_len
+                    except DecompressError:
+                        pass
+        off += align
 
 
 def main(argv=None):
@@ -435,6 +458,8 @@ def main(argv=None):
     p.add_argument("--max-size", type=int, default=4 << 20)
     p.add_argument("--no-verify", action="store_true")
     p.add_argument("--align", type=int, default=4)
+    p.add_argument("--start", default="0xC0", help="offset to start scanning (default: after the cartridge header)")
+    p.add_argument("--types", default="lz77,huffman,rle", help="comma list of formats to report (RLE is the noisiest)")
 
     a = ap.parse_args(argv)
 
@@ -453,9 +478,11 @@ def main(argv=None):
         data = open(a.file, "rb").read()
         off = parse_address(a.offset)
         out, layers = decompress(data, off, chain=a.chain)
+        _, end = DECODERS_EX[parse_header(data, off)[0]](data, off)
         dest = a.output or (a.file + ".dec")
         open(dest, "wb").write(out)
-        print("layers: %s -> %d bytes written to %s" % (" > ".join(layers), len(out), dest))
+        print("layers: %s -> %d bytes written to %s (outer block spans 0x%X-0x%X, %d bytes)" % (
+            " > ".join(layers), len(out), dest, off, end, end - off))
         return 0
 
     if a.cmd == "compress":
@@ -479,8 +506,9 @@ def main(argv=None):
     if a.cmd == "scan":
         data = open(a.file, "rb").read()
         count = 0
-        for off, kind, size, ok in scan(data, a.min_size, a.max_size, not a.no_verify, a.align):
-            print("0x%06X  bus 0x%08X  %-8s %8d bytes%s" % (off, off + ROM_BASE, kind, size, "" if ok is None else ("  verified" if ok else "")))
+        for off, kind, size, comp in scan(data, a.min_size, a.max_size, not a.no_verify, a.align, int(a.start, 0), tuple(a.types.split(","))):
+            extra = "" if comp is None else "  compressed %6d bytes (ends 0x%06X, %.0f%%)" % (comp, off + comp, 100.0 * comp / size)
+            print("0x%06X  bus 0x%08X  %-8s -> %8d bytes%s" % (off, off + ROM_BASE, kind, size, extra))
             count += 1
         print("%d candidate block(s)" % count, file=sys.stderr)
         return 0

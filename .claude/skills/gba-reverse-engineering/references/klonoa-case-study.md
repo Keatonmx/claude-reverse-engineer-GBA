@@ -24,8 +24,9 @@ method in `debugging-workflow.md`.
   lookup it performs against the level structure. The collision data and the visual tilemap are read from the same
   level buffer, so the real target is the full tilemap in WRAM, not VRAM.
 - **Part 4, "where is the tilemap in the ROM?".** Write breakpoint on the WRAM tilemap during level load leads into the
-  BIOS: `swi 0x11` (LZ77UnCompWram), r0 = `0x081B27FC`. The block there is Huffman-wrapped LZ77. IDA's hex view shows
-  how far the data item extends. CUE's LZSS/Huffman C tools are compiled to WebAssembly so the browser can decode and
+  BIOS decompression calls (`swi 0x11` LZ77UnCompWram is the one the article walks through; the source register
+  pointed back to ROM at `0x081B27FC`). The block there is Huffman-wrapped LZ77: klo-gba.js decodes it as
+  `huffmanDecode` then `lzssDecode`. IDA's hex view shows how far the data item extends. CUE's LZSS/Huffman C tools are compiled to WebAssembly so the browser can decode and
   re-encode.
 - **Part 5, "let there be tilemap".** The decoded vector (25203 bytes for vision 1-1, first 4 bytes are metadata) has
   to be folded into a matrix; the width/height come from a per-vision table. Each vision has several stages but one

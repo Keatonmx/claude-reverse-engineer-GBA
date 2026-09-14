@@ -103,8 +103,22 @@ class TestChain(unittest.TestCase):
     def test_scan_finds_block(self):
         s = bytes(range(256)) * 4
         blob = b"\xAA" * 100 + gc.lz77_compress(s) + b"\x00" * 50
-        hits = list(gc.scan(blob, min_size=64))
-        self.assertTrue(any(off == 100 and kind == "lz77" and size == 1024 for off, kind, size, ok in hits))
+        hits = list(gc.scan(blob, min_size=64, start=0))
+        self.assertTrue(any(off == 100 and kind == "lz77" and size == 1024 for off, kind, size, comp in hits))
+        off, kind, size, comp = [h for h in hits if h[0] == 100][0]
+        self.assertEqual(comp, len(gc.lz77_compress(s)))
+
+    def test_scan_rejects_zero_filled_region(self):
+        # A zeroed header region that happens to parse as RLE must not be reported (it would "inflate")
+        blob = bytes([0x30, 0x31, 0x96, 0x00]) + b"\x00" * 80000
+        self.assertEqual(list(gc.scan(blob, min_size=64, start=0)), [])
+
+    def test_decompress_ex_end_offset(self):
+        enc = gc.lz77_compress(b"abc" * 100)
+        out, end = gc.lz77_decompress_ex(b"\xEE" * 8 + enc + b"\xEE" * 8, 8)
+        self.assertEqual(out, b"abc" * 100)
+        self.assertLessEqual(8 + end - 8, 8 + len(enc))
+        self.assertGreaterEqual(end, 8 + len(enc) - 3)  # padding may be skipped
 
 
 class TestThumbPatch(unittest.TestCase):

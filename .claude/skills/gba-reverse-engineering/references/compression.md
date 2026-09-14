@@ -21,8 +21,10 @@ byte 0   : high nibble = type (1 LZ77, 2 Huffman, 3 RLE, 8 diff-filter), low nib
 bytes 1-3: decompressed size, little-endian 24 bits
 ```
 
-So a block starting `10 73 62 00` is LZ77 that inflates to `0x6273` = 25203 bytes (that is Klonoa vision 1-1's tilemap,
-the number the article quotes). `gba_compress.py info rom.gba 0x1B27FC` prints exactly this.
+So a block starting `10 73 62 00` is LZ77 that inflates to `0x6273` = 25203 bytes, and one starting `28 xx xx xx` is
+Huffman with 8-bit symbols. Klonoa's vision 1-1 tilemap at `0x1B27FC` is a Huffman block whose *output* is an LZ77 block
+that inflates to 25203 bytes (the number the article quotes). `gba_compress.py info rom.gba 0x1B27FC` prints the outer
+header; `decompress --chain` peels both.
 
 ## 2. LZ77 (SWI 0x11 / 0x12)
 
@@ -86,7 +88,7 @@ fails at an address a pointer table gave you, try `address + 4` (and check the b
 5. Find who references it: `gba_rom.py pointers rom.gba <addr>`. A hit inside a regular table (equal stride between
    entries) is the per-level asset table; dump it with `gba_rom.py table` to get every other level for free.
 
-If you have no debugger handy, `gba_compress.py scan rom.gba --min-size 1024` lists every block that decodes cleanly;
+If you have no debugger handy, `gba_compress.py scan rom.gba --min-size 1024 --types lz77,huffman` lists every block that decodes cleanly and shrinks its input (RLE hits are noisy, hence the filter);
 plausible tilemaps are the larger ones and their sizes match `width * height (+ small header)`.
 
 ## 7. Re-compressing
