@@ -25,6 +25,7 @@ Work from what you can see toward what is stored, one hop at a time, and write d
    memory viewer; it usually reverts next frame, which is your first clue that a copy routine exists.
 4. **Follow the writer (DMA or CPU copy) to WRAM.** Write watchpoint on the VRAM entry. If the PC is in a loop that
    writes the DMA registers (`0400_00Bx`), read the DMA source register; otherwise read the load feeding the store.
+   If the watchpoint never fires (mGBA only traps CPU accesses), watch the DMA control register instead.
    Edit the WRAM copy: if the change now persists you have the working level buffer.
 5. **Check the gameplay data, not only the picture.** Collision, physics, and spawns may use another structure.
    Find the variable (memory search for the player's Y while falling), watch writes to it, read the routine in the

@@ -34,7 +34,7 @@ The thing you can see is the least interesting copy of the data. Follow it upstr
 | Hop | What you have | How to get the next address |
 |---|---|---|
 | Screen | A tile you can point at | VRAM/tilemap viewer: hover the tile, read its tile index and the map address in VRAM (`06xx_xxxx`). Note which BG layer it is on (in Klonoa the walkable layer was BG2). |
-| VRAM | Map address | Edit the entry in the memory viewer. If it reverts next frame, something re-copies it every frame. Set a **write watchpoint** on that address. |
+| VRAM | Map address | Edit the entry in the memory viewer. If it reverts next frame, something re-copies it every frame. Set a **write watchpoint** on that address. In mGBA, watchpoints only fire for CPU accesses: if nothing triggers, the writer is DMA, so watch the DMA control register instead (`0x040000DE` for DMA3, `0x040000BA/C6/D2` for 0-2) and read the channel's source/destination when it fires. |
 | Writer | PC at the break | If PC is in a loop poking `0400_00Bx`, it is DMA: read the channel's source register. Otherwise it is a CPU copy: read the source register of the `ldr/ldrh` feeding the store. Either way you get a WRAM address (`02xx`/`03xx`). |
 | WRAM | Full level buffer | Editing here persists visually (the DMA copies your edit every frame). Watch writes to the buffer start and **reload the level** to catch whoever fills it. |
 | Filler | PC in BIOS or a game routine | If inside a BIOS SWI (0x11/0x12/0x13/0x14): r0 = ROM source, r1 = destination. If a custom routine: find its source pointer the same way (usually `ldr r0,[pc,#..]` from a literal pool or a table lookup). |
@@ -96,7 +96,8 @@ per-phase data is a separate table of offsets/portals rather than separate maps.
 
 ```
 break 0x08043B0C          execution breakpoint
-watch/w 0x03004DB0        break on write   (watch/r read, watch/c change)
+watch/w 0x03004DB0        break on write   (watch/r read, watch/c change; CPU accesses only, DMA does not trigger)
+watch/w 0x040000DE        catch the CPU arming DMA3, then read DMA3SAD (0x040000D4) / DMA3DAD (0x040000D8)
 watch 0x0600F000 ...      any access
 r/2 0x03004DB0            read halfword   (r/1, r/4); w/2 addr value writes
 i                         registers      (r0..r15, cpsr)
