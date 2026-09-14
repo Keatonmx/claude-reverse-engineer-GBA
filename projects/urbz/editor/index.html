@@ -93,6 +93,7 @@
         <label><select id="artbank"></select></label>
       </div>
       <div class="row"><span id="arttarget" style="color:var(--dim)">Target: the piece selected in the Pieces tab.</span> <button id="artsuggest">Suggest a private piece</button></div>
+      <div class="row"><span style="color:var(--dim)">References for the image model:</span> <button id="refpiece">Piece @8x</button> <button id="refarea">Area around it @4x</button> <button id="refpal">Palette swatch</button> <button id="refmap">Whole district</button></div>
       <div class="row"><canvas id="artpreview" width="128" height="128" style="image-rendering:pixelated;background:#15171b"></canvas>
         <div style="flex:1;min-width:120px"><button id="artapply" class="primary" disabled>Apply to piece</button><div id="artreport" style="color:var(--dim);margin-top:6px;white-space:pre-line"></div></div></div>
       <div id="artinfo" style="padding:6px 10px;color:var(--dim)">Art replaces the pixels of the selected piece's 16 tiles in the district's tile bank (the bank cannot grow). Tiles shared with other pieces change everywhere; pick a piece whose tiles are private, or use Suggest. Transparent = magenta or alpha.</div>
@@ -486,6 +487,25 @@
     S.thumbs = S.level.layers.map((l, L) => (l ? buildThumbs(l, L === 0) : null)); S.bankCanvasPal = -1;
     buildPicker(); drawMap(); drawPiece(); drawBank(); previewArt();
   }
+
+  // ---------------------------------------------------------------- reference exports (what to hand an image model)
+  function canvasDownload(cv, name) { cv.toBlob((b) => { const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }, "image/png"); }
+  function scaled(src, sx, sy, sw, sh, k) { const cv = document.createElement("canvas"); cv.width = sw * k; cv.height = sh * k; const ctx = cv.getContext("2d"); ctx.imageSmoothingEnabled = false; ctx.drawImage(src, sx, sy, sw, sh, 0, 0, sw * k, sh * k); return cv; }
+  $("refpiece").addEventListener("click", () => { const L = curLayerIdx(); if (L < 0) return; const th = S.thumbs[L]; canvasDownload(scaled(th.cv, (S.sel % th.cols) * 32, ((S.sel / th.cols) | 0) * 32, 32, 32, 8), `piece-${S.sel}-layer${L}-8x.png`); });
+  $("refarea").addEventListener("click", () => {
+    const L = curLayerIdx(); if (L < 0) return; const lay = S.level.layers[L]; let i = lay.cells.indexOf(S.sel); if (i < 0) i = 0;
+    const cx = i % lay.w, cy = (i / lay.w) | 0; const x0 = Math.max(0, cx - 3), y0 = Math.max(0, cy - 3), w = Math.min(lay.w - x0, 7), h = Math.min(lay.h - y0, 7);
+    const z = S.zoom; const gridOn = $("showG").checked; $("showG").checked = false; drawMap();
+    canvasDownload(scaled($("map"), x0 * 32 * z, y0 * 32 * z, w * 32 * z, h * 32 * z, 4 / z), `area-around-piece-${S.sel}-4x.png`);
+    $("showG").checked = gridOn; drawMap();
+  });
+  $("refpal").addEventListener("click", () => {
+    const cv = document.createElement("canvas"); cv.width = 16 * 24; cv.height = 16 * 24; const ctx = cv.getContext("2d");
+    for (let b = 0; b < 16; b++) for (let i = 0; i < 16; i++) { const c = S.level.palette[b * 16 + i]; ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`; ctx.fillRect(i * 24, b * 24, 24, 24); }
+    ctx.fillStyle = "#fff"; ctx.font = "10px sans-serif"; for (let b = 0; b < 16; b++) ctx.fillText(String(b), 2, b * 24 + 11);
+    canvasDownload(cv, `palette-banks-${S.rec.toString(16)}.png`);
+  });
+  $("refmap").addEventListener("click", () => { const z = S.zoom, g = $("showG").checked; $("showG").checked = false; drawMap(); canvasDownload(scaled($("map"), 0, 0, $("map").width, $("map").height, 1 / z), `district-${S.rec.toString(16)}.png`); $("showG").checked = g; drawMap(); });
 
   // test hook (headless browser test): expose state and a few actions
   window.__editor = S;

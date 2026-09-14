@@ -30,6 +30,22 @@ ASSETS (final sizes):
 Deliver one asset per image.
 ```
 
+## What to send along with the prompt
+
+The prompt alone gets generic pixel art. Attach references from the editor's *Import art* tab so the model matches the
+game's look:
+
+1. **Piece @8x** — the piece you are replacing, blown up so the model sees the exact pixel grid and the isometric angle.
+   Ask it to "redraw this piece as X, same angle, same light direction, same footprint".
+2. **Area around it @4x** — seven by seven pieces around the target, so the new art fits its neighbours (kerb lines,
+   pavement texture, shadow side).
+3. **Palette swatch** — the district's 16 palette banks. Say "use colours close to bank N" when you want *piece's own
+   banks* in the converter, or leave the model free when you will use *new palette into bank N*.
+4. **Whole district** (optional) — for overall style and scale.
+
+Then describe the asset in one or two sentences: what it is, which of the three roles it plays (ground, wall or object),
+where the transparent parts are, and anything that must line up with neighbours. One asset per request works best.
+
 ## What the converter enforces, so you do not have to
 
 - Grid: it detects 8x, 4x or 2x upscaling and samples block centres. A blurry grid still works if blocks are mostly flat.
