@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
-"""Render district/level layers from The Urbz (GBA) using the record format documented in FINDINGS.md.
+"""Render district/level layers from The Urbz (GBA) in colour. Format confirmed by tracing the game's tile-cache
+routine (ROM 0x4FCD8 allocator, 0x4FDA2 copy) and the map walker at 0x4FA38 in a headless mGBA (see emu/ and FINDINGS.md).
 
-    urbz_level.py list   rom.gba                       # level records (80-byte entries at 0x73598 + k*0x50)
-    urbz_level.py render rom.gba <record_offset> out.png [--layer 0|1|2|3] [--crop CW CH] [--origin CX CY] [--zoom N] [--grid]
-       (--layer 0 = composite of all three; default 1)
+    urbz_level.py list   rom.gba                       # level records (80-byte entries at 0x73590 + k*0x50)
+    urbz_level.py render rom.gba <record_offset> out.png [--layer 0|1|2|3] [--crop CW CH] [--origin CX CY] [--zoom N]
+       (--layer 0 = composite of all three, default; crop/origin in 32x32 metatiles)
 
-Level record (file offsets, 80 bytes):
-  +0x08 collision metatiles (type 6, 16 bytes each)   +0x0C collision map (type 6: u16 count, 3 words, u16 cells)
-  +0x1C raw tile pixel bank (type 0, 4bpp 8x8 tiles)   +0x20 tile cache table (0xFFFF-filled)
-  +0x28/+0x2C, +0x38/+0x3C, +0x48/+0x4C: three layers of (map, metatiles):
-     map       = type 6 + Diff16: u16 width, u16 height, then width*height u16 metatile ids
-     metatiles = type 6 (+Diff16): u16 count, u16 0, u16 x, u16 x (x = 0 or 6325, meaning unknown), then count * 24 u16 refs:
-                 bits 0-9 tile index into the first 1024 tiles of the bank, bit 12 vertical flip, bit 13 horizontal flip,
-                 bits 10-11 presumably palette. The 24 refs are rows of 8, 8, 4, 4 tiles of a 64x32 block; the map is
-                 drawn with a 16 px row pitch and each row shifted 32 px right (the next row overdraws the block's
-                 bottom-right quarter, which is why only 4 tiles are stored for rows 2-3).
-Palettes are not yet located, so output is greyscale by colour index. Layer 1 (ground) is verified: tile-edge
-continuity scores ~1.1-1.7 against 3.8 for random pairs and the render shows streets. Layers 2 and 3 (objects) reference
-a tile page that has not been identified yet, so they currently draw ground tiles; treat --layer 2/3 and --layer 0 as
-experimental until a debugger session pins the page (see FINDINGS.md).
+Level record (file offsets, 80 bytes; records found by signature scan of 0x73000-0x7A000, e.g. 0x748C8):
+  +0x00/+0x04, +0x10/+0x14, +0x20/+0x24: three layers of (map, metatiles), drawn on BG2, BG1, BG0 (BG3 = HUD)
+  +0x30 collision metatiles (type 6, 16 bytes each)   +0x34 collision map (type 6: u16 count, 3 words, u16 cells)
+  +0x40 object list (4 zero bytes then type-6 blobs of 6-byte records)
+  +0x44 tile bank: type 0 (raw) header, then 4bpp 8x8 tiles; a metatile tile reference is the tile index into it
+  +0x48 background palettes: raw, 16 banks x 16 BGR555 colours (512 bytes), copied to palette RAM as-is
+  (verified in the emulator: the live district's RAM maps/metatiles, VRAM tile sources and palette RAM all come from
+   one record laid out this way; an earlier version of this tool paired each record's layers with the next record's bank)
+  Layer details:
+     map       = type 6 + Diff16: u16 width, u16 height (in 32x32 metatiles), then width*height u16 metatile ids
+     metatiles = type 6 (+Diff16): u16 count, u16 0, u16 x, u16 x, then count x 32 bytes: 16 u16 tile references
+                 (4x4 block, row-major, 8x8 tiles), then count x 16 attribute bytes, one per tile:
+                 bit 0 hflip, bit 1 vflip, bits 2-5 palette bank (the byte is shifted left 10 into the screen entry).
+     The game caches tiles into VRAM on demand (cache table indexed by ref & 0x7FF, full ref compared), which is why
+     VRAM never holds the whole bank.
 """
 import os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -27,28 +29,10 @@ import urbz_codec as uc
 import render_tiles as rt
 
 ROM_BASE = 0x08000000
-FIRST_RECORD = 0x73598 - 8
+FIRST_RECORD = 0x735C0
 STRIDE = 0x50
-GRAY = [(i * 16, i * 16, i * 16) for i in range(16)]
-POS = {}
-for k in range(4):
-    POS[k] = (k, 0); POS[16 + k] = (4 + k, 0); POS[4 + k] = (k, 1); POS[20 + k] = (4 + k, 1)
-    POS[8 + k] = (k, 2); POS[12 + k] = (k, 3)
-
-
-def paint(canvas, x0, y0, tile, hflip, vflip, opaque):
-    """Draw one 4bpp tile in greyscale; colour 0 is skipped (transparent) unless opaque."""
-    for i, idx in enumerate(tile):
-        if idx == 0 and not opaque:
-            continue
-        x, y = i % 8, i // 8
-        if hflip:
-            x = 7 - x
-        if vflip:
-            y = 7 - y
-        row = canvas[y0 + y]
-        p = (x0 + x) * 3
-        row[p:p + 3] = bytes(GRAY[idx])
+F_LAYERS = (0x00, 0x10, 0x20)
+F_COLL_META, F_COLL_MAP, F_OBJECTS, F_BANK, F_PALETTE = 0x30, 0x34, 0x40, 0x44, 0x48
 
 
 def ptr(rom, off):
@@ -57,66 +41,85 @@ def ptr(rom, off):
 
 
 def records(rom):
+    """Scan the table region for the record signature (records are 80 bytes but not on one fixed grid)."""
     out = []
-    off = FIRST_RECORD
+    off = 0x73000
     while off + STRIDE <= 0x7A000:
-        a, b = ptr(rom, off + 8), ptr(rom, off + 0xC)
-        if a is not None and b is not None and rom[a] >> 4 == 6 and rom[b] >> 4 == 6:
-            out.append(off)
-        off += STRIDE
+        ok = True
+        for i, base in enumerate(F_LAYERS):
+            a, b = ptr(rom, off + base), ptr(rom, off + base + 4)
+            if a is None or b is None:
+                if i == 0 or struct.unpack_from("<I", rom, off + base)[0] != 0:
+                    ok = False; break
+                continue
+            if ((rom[a] >> 4) & 7) != 6 or ((rom[b] >> 4) & 7) != 6:
+                ok = False; break
+        bank, pal = ptr(rom, off + F_BANK), ptr(rom, off + F_PALETTE)
+        if ok and bank is not None and pal is not None and (rom[bank] >> 4) == 0:
+            out.append(off); off += STRIDE
+        else:
+            off += 4
     return out
 
 
 def load_level(rom, rec):
-    bank_off = ptr(rom, rec + 0x1C)
-    bank_size = struct.unpack_from("<I", rom, bank_off)[0] >> 8
-    tiles = rt.decode_tiles(rom[bank_off + 4:bank_off + 4 + bank_size], 4)
+    bank = ptr(rom, rec + F_BANK)
+    size = struct.unpack_from("<I", rom, bank)[0] >> 8
+    tiles = rt.decode_tiles(rom[bank + 4:bank + 4 + size], 4)
+    pal_off = ptr(rom, rec + F_PALETTE)
+    palette = rt.decode_palette(rom[pal_off:pal_off + 512]) if pal_off else [(0, 0, 0)] * 256
     layers = []
-    for base in (0x28, 0x38, 0x48):
+    for base in F_LAYERS:
         m, t = ptr(rom, rec + base), ptr(rom, rec + base + 4)
         if m is None or t is None:
             layers.append(None); continue
         tm, _ = uc.decode(rom, m); mt, _ = uc.decode(rom, t)
         w, h = struct.unpack_from("<HH", tm, 0)
         cells = struct.unpack_from("<%dH" % (w * h), tm, 4)
-        n, _, hdr2, _ = struct.unpack_from("<4H", mt, 0)
-        metas = [struct.unpack_from("<24H", mt, 4 + i * 48) for i in range(n)]
-        layers.append((w, h, cells, metas, 0))  # tile base 0 scores best for every layer; hdr2 (0 or 6325) is not a base
-    return tiles, layers
+        n = struct.unpack_from("<H", mt, 0)[0]
+        refs = [struct.unpack_from("<16H", mt, 4 + i * 32) for i in range(n)]
+        attrs = [mt[4 + n * 32 + i * 16:4 + n * 32 + (i + 1) * 16] for i in range(n)]
+        layers.append((w, h, cells, refs, attrs))
+    return tiles, palette, layers
 
 
-def render(rom, rec, layer=1, crop=None, zoom=1, grid=False, origin=(0, 0)):
-    """layer: 1, 2, 3 or 0 for all three composited (later layers drawn over earlier ones)."""
-    tiles, layers = load_level(rom, rec)
-    chosen = [layers[layer - 1]] if layer else [l for l in layers if l]
-    w, h = chosen[0][0], chosen[0][1]
+def draw_layer(canvas, tiles, palette, layer, ox, oy, cw, ch, opaque):
+    w, h, cells, refs, attrs = layer
+    for my in range(min(ch, h - oy)):
+        for mx in range(min(cw, w - ox)):
+            cid = cells[(my + oy) * w + mx + ox]
+            if cid >= len(refs):
+                continue
+            for k in range(16):
+                t = refs[cid][k]; a = attrs[cid][k]
+                if (t == 0 and not opaque) or t >= len(tiles):
+                    continue
+                hf, vf, bank = bool(a & 1), bool(a & 2), (a >> 2) & 0xF
+                x0, y0 = mx * 32 + (k % 4) * 8, my * 32 + (k // 4) * 8
+                tile = tiles[t]
+                for i, idx in enumerate(tile):
+                    if idx == 0 and not opaque:
+                        continue
+                    x, y = i % 8, i // 8
+                    if hf: x = 7 - x
+                    if vf: y = 7 - y
+                    canvas[y0 + y][(x0 + x) * 3:(x0 + x) * 3 + 3] = bytes(palette[bank * 16 + idx] if idx else palette[0])
+
+
+def render(rom, rec, layer=0, crop=None, zoom=1, origin=(0, 0)):
+    tiles, palette, layers = load_level(rom, rec)
+    chosen = [(i, layers[i]) for i in ([layer - 1] if layer else (0, 1, 2)) if layers[i]]
+    w, h = chosen[0][1][0], chosen[0][1][1]
     cw, ch = crop or (w, h)
-    if grid:
-        W, H = cw * 64, ch * 32
-    else:
-        W, H = cw * 64 + 32 * ch + 32, ch * 16 + 32
+    W, H = cw * 32, ch * 32
     canvas = rt.blank_canvas(W, H)
-    ox, oy = origin
-    for li, (w, h, cells, metas, tile_base) in enumerate(chosen):
-        for cy in range(min(ch, h - oy)):
-            for cx in range(min(cw, w - ox)):
-                m = metas[cells[(cy + oy) * w + cx + ox] & 0x3FF]
-                px, py = (cx * 64, cy * 32) if grid else (cx * 64 + 32 * cy, cy * 16)
-                for k, e in enumerate(m):
-                    t = e & 0x3FF
-                    if t == 0:
-                        continue
-                    t += tile_base
-                    if t >= len(tiles):
-                        continue
-                    tx, ty = POS[k]
-                    paint(canvas, px + tx * 8, py + ty * 8, tiles[t], bool(e & 0x2000), bool(e & 0x1000), li == 0)
+    for n, (i, lay) in enumerate(chosen):
+        draw_layer(canvas, tiles, palette, lay, origin[0], origin[1], cw, ch, n == 0)
     if zoom > 1:
         big = rt.blank_canvas(W * zoom, H * zoom)
         for y in range(H):
-            row = canvas[y]
             for x in range(W):
-                px = row[x * 3:x * 3 + 3]
+                px = canvas[y][x * 3:x * 3 + 3]
                 for dy in range(zoom):
                     r = big[y * zoom + dy]
                     for dx in range(zoom):
@@ -130,21 +133,21 @@ def main():
     rom = open(path, "rb").read()
     if cmd == "list":
         for rec in records(rom):
-            m, t = ptr(rom, rec + 0x28), ptr(rom, rec + 0x2C)
-            bank = ptr(rom, rec + 0x1C)
-            print("record 0x%06X: collision 0x%X/0x%X, bank 0x%X (%d bytes), layer1 map 0x%X metatiles 0x%X" % (
-                rec, ptr(rom, rec + 8), ptr(rom, rec + 0xC), bank, struct.unpack_from("<I", rom, bank)[0] >> 8, m, t))
+            bank = ptr(rom, rec + F_BANK); m = ptr(rom, rec + F_LAYERS[0])
+            tm, _ = uc.decode(rom, m); w, h = struct.unpack_from("<HH", tm, 0)
+            print("record 0x%06X: map %2dx%2d metatiles, bank 0x%X (%d bytes), palette 0x%X" % (
+                rec, w, h, bank, struct.unpack_from("<I", rom, bank)[0] >> 8, ptr(rom, rec + F_PALETTE) or 0))
         return
     rec = int(sys.argv[3], 0); out = sys.argv[4]
-    layer = int(sys.argv[sys.argv.index("--layer") + 1]) if "--layer" in sys.argv else 1
+    layer = int(sys.argv[sys.argv.index("--layer") + 1]) if "--layer" in sys.argv else 0
     crop = None
     if "--crop" in sys.argv:
         i = sys.argv.index("--crop"); crop = (int(sys.argv[i + 1]), int(sys.argv[i + 2]))
-    zoom = int(sys.argv[sys.argv.index("--zoom") + 1]) if "--zoom" in sys.argv else 1
     origin = (0, 0)
     if "--origin" in sys.argv:
         i = sys.argv.index("--origin"); origin = (int(sys.argv[i + 1]), int(sys.argv[i + 2]))
-    canvas, W, H = render(rom, rec, layer, crop, zoom, "--grid" in sys.argv, origin)
+    zoom = int(sys.argv[sys.argv.index("--zoom") + 1]) if "--zoom" in sys.argv else 1
+    canvas, W, H = render(rom, rec, layer, crop, zoom, origin)
     rt.write_png(out, W, H, canvas)
     print("%dx%d -> %s" % (W, H, out))
 

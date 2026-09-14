@@ -40,8 +40,9 @@ BIOS wrapper stubs (each `swi N; bx lr`): CpuFastSet `0x6B36C`, CpuSet `0x6B370`
 LZ77Vram `0x6B384`, LZ77Wram `0x6B388`, ObjAffineSet `0x6B38C`, RLVram `0x6B390`, RLWram `0x6B394`, Sqrt `0x6B398`,
 VBlankIntrWait `0x6B39C`. Their callers are how the loaders were found.
 
-**Decoder B (type 6) is fully translated** in `urbz_codec.py` and decodes all 7,431 type-6 resources in the directory to
-exactly their declared size. Format: a 4-byte parameter word (dictionary length, escape value, extra distance bits,
+**Decoder B (type 6) is fully translated** in `urbz_codec.py`; it decodes all 7,431 type-6 resources in the directory to
+their declared size and is **byte-identical to the game's own loader** on every blob tested through the emulator oracle
+(sprites and Diff16-filtered map/metatile blobs up to 16,900 bytes). Format: a 4-byte parameter word (dictionary length, escape value, extra distance bits,
 literal split bits) + a dictionary of up to 31 bytes + an MSB-first bitstream of 32-bit words with a sentinel bit.
 Tokens: literal (`n_c` high bits compared to an adaptive escape value, then `n_a` low bits); escape then an
 Elias-gamma code: code ≥ 2 → LZ match of length code+1 with a gamma-coded distance (0xFF = end of stream); code 1 then
@@ -72,30 +73,29 @@ go through a lighting stage before reaching hardware. Finding the palette source
   `0x92000` shows repeated rows of five function pointers + a flags word (`01 01 00 05`) = object/state dispatch tables.
 - **Item table** at `0x75000`: 20-byte records `{ptr → 0x149xxxx descriptor, 5 bytes of parameters (10/21/21/21/21, 50/6/6/6/6…), pad, u32 id}`
   with sequential ids `0x3D6, 0x3D7, …`.
-- **Level / district records** (confirmed layout, 75 records of 80 bytes at `0x73590 + k*0x50`, `urbz_level.py list`):
+- **District records (verified in the emulator, see section 7)**: 80-byte records in `0x73000-0x7A000`, found by
+  signature (`urbz_level.py list`), each:
 
   | Offset | Content |
   |---|---|
-  | `+0x08` | collision metatiles: type 6, 16 bytes each (values `03`, `43`, `12`, `13`, `10`, `11`, `00`: walkability/edge codes) |
-  | `+0x0C` | collision map: type 6, `u16 metatile_count` (matches +0x08 exactly), 3 words, then u16 metatile ids (e.g. 38x20 for record `0x735E0`) |
-  | `+0x18` | small raw descriptor |
-  | `+0x1C` | **tile pixel bank**: type 0 (raw), 62 KB to 610 KB of 4bpp 8x8 tiles; ends exactly at the next pointer's target |
-  | `+0x20` | 0xFFFF-filled table (*likely* the tile→VRAM cache map the engine fills at runtime) |
-  | `+0x28/+0x2C`, `+0x38/+0x3C`, `+0x48/+0x4C` | three layers of (map, metatiles): map = type 6 + Diff16, `u16 w, u16 h` (32x30) then w*h u16 metatile ids; metatiles = type 6 (+Diff16), `u16 count`, `u16 0`, then count x 24 u16 tile refs |
+  | `+0x00/+0x04`, `+0x10/+0x14`, `+0x20/+0x24` | three visual layers (map, metatiles) for BG2, BG1, BG0 (BG3 is the HUD) |
+  | `+0x30` / `+0x34` | collision metatiles (type 6, 16 bytes each) / collision map (`u16 count`, 3 words, u16 cells) |
+  | `+0x40` | object list (4 zero bytes, then type-6 blobs of 6-byte records such as `{2, 0, 7455}`) |
+  | `+0x44` | **tile bank**: raw (type 0) header, then 4bpp 8x8 tiles; a metatile tile reference is an index into it |
+  | `+0x48` | **background palettes**: 512 raw bytes = 16 BGR555 banks, copied to palette RAM (bank 0 is overwritten by the HUD) |
 
-  **Metatile geometry and tile refs (confirmed by edge-continuity scoring; true neighbours score 1.1-1.7 against 3.8 for
-  random tile pairs, calibrated on 16x16 sprites).** The 24 refs are rows of 8, 8, 4 and 4 tiles of a 64x32 block. The map
-  is drawn with a 16 px row pitch and each successive row shifted 32 px to the right, so the next row overdraws the
-  block's bottom-right quarter, which is why rows 2-3 only store their left 4 tiles. A tile ref is `bits 0-9` = tile
-  index into a 1024-tile page of the bank (4bpp, 32 bytes each), `bit 12` = vertical flip, `bit 13` = horizontal flip,
-  `bits 10-11` most likely the palette bank. **Layer 1 (ground) uses page base 0 and renders as recognisable streets**
-  (`urbz_level.py render --layer 1`: curbs, pavement stripes, road markings, street furniture, in greyscale).
-  **Layers 2-3 (objects/buildings) use a different page that static scoring cannot identify**: the first ~1,300 bank
-  tiles are self-similar pavement that joins with anything, so every continuity or transparency metric prefers the low
-  region regardless of the true base. Their metatile header is `{u16 count, u16 0, u16 6325, u16 6325}` versus
-  `{636, 0, 0, 0}` for layer 1; 6325 as a tile base did not score better, but it is the obvious lead (it may be a byte or
-  word offset, or an index into the +0x20 cache table). One mGBA session with `watch/w 0x06000000` during a district load
-  resolves it: the copy routine's source address minus the bank start is the page base.
+  Map blob = type 6 + Diff16: `u16 width, u16 height` in 32x32-pixel metatiles, then `width*height` u16 metatile ids.
+  Metatile blob = type 6 (+Diff16): `u16 count, u16 0, u16 x, u16 x`, then `count` x 32 bytes of **16 u16 tile references**
+  (a 4x4 block of 8x8 tiles, row-major), then `count` x 16 **attribute bytes** (bit 0 hflip, bit 1 vflip, bits 2-5 palette
+  bank; the byte is shifted left 10 into the hardware screen entry). The game keeps a VRAM tile cache (allocator at
+  `0x4FCD8`: cache table indexed by `ref & 0x7FF`, full reference compared; copy at `0x4FDA2`: source = bank + ref*32) and
+  draws the map at `0x4FA38` with the cell at `map[(y>>5)*width + (x>>5)]` and the tile at entry `((y>>3)&3)*4 + ((x>>3)&3)`.
+  There is no isometric geometry in the format; the isometric look is in the art.
+
+  **Exact verification**: with the game paused in the first district, every visible cell of BG2, BG1 and BG0 (651 of 651
+  each) matches the ROM record `0x748C8` in tile index and attribute at map tile origin (11,25) with scroll (90,205), the
+  RAM copies of maps and metatiles are byte-identical to the decoded ROM blobs, and palette banks 1-15 equal the record's
+  palette block. `urbz_level.py render rom.gba 0x748C8 out.png --crop 8 6 --origin 2 6` reproduces the screenshot in colour.
 - **Text**: no ASCII anywhere (`strings` finds nothing but the header and the save signature), so the six-language script uses
   a font-index encoding and is *likely* stored as large blobs referenced from code rather than from the directory
   (search still open; candidates are the 122 large type-4/6 blobs referenced from code).
@@ -117,14 +117,24 @@ go through a lighting stage before reaching hardware. Finding the palette source
    pointer change. Money/skill gain constants live in the functions those tables reference.
 5. **Lighting and palette hacks** — *hours*. The remap LUT used by `0x08015E58` controls tint; patching it yields
    night/sepia/colour-blind modes without touching any asset.
-6. **District/level editor** — *a week or two*. The level record, collision layer, three visual layers, metatile blocks,
-   tile refs and the raw tile bank are all decoded and render as recognisable streets; what is missing is the palette
-   (for colour) and the meaning of the bank's remaining pages. Collision edits are already possible today: the collision map is a plain u16 grid over 16-byte metatiles, so
+6. **District/level editor** — *days*. The record format is fully decoded and verified against the running game, and
+   `urbz_level.py` renders any district in colour exactly as it appears on screen. An editor needs a type-6 encoder (or
+   re-saving maps/metatiles as BIOS LZ77 with the type nibble changed to 1, which the loader accepts) plus free space
+   for grown blobs (the 32 KB tail, or an IPS-style pointer redirect). Collision edits are already possible today: the collision map is a plain u16 grid over 16-byte metatiles, so
    walls/walkable areas can be moved with `urbz_codec` + a type-6 encoder or by storing the edited map as BIOS LZ77 (type 1).
 7. **Sound replacement** — *weeks*. Custom driver, raw 8-bit PCM at `0x1100000+`; sample swaps are feasible once the
    sample table is found, music sequencing would need the driver reversed.
 
-## 6. Next debugger session (mGBA)
+## 6. Debugger session (done, headless mGBA)
+
+`emu/` holds a scripted-input harness, a watchpoint/breakpoint tracer and a loader oracle built on libmgba (no display
+needed). The route from power-on to the first district is scripted (`probe10.txt`), memory was dumped in the district,
+VRAM tiles were traced back to the bank copy routine, the map walker and cache allocator were disassembled with the live
+register values, and the game's own loader was called on ROM blobs to prove the Python decoder byte-exact. One trap worth
+recording: two adjacent records share most tile graphics at different indices, so matching VRAM tiles against the wrong
+record's bank produced a convincing but false "remap"; the map/metatile RAM comparison settled which record was loaded.
+
+## 7. Remaining leads
 
 1. Break on `0x0801EC00` (loader) with a save state in a district; log r0 (source) for every call → maps directory records
    to on-screen objects and finds the font. Then `watch/w 0x06000000` (charblock 0) after a district load to catch the
