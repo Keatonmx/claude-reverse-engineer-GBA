@@ -15,8 +15,10 @@ Level record (file offsets, 80 bytes):
                  bits 10-11 presumably palette. The 24 refs are rows of 8, 8, 4, 4 tiles of a 64x32 block; the map is
                  drawn with a 16 px row pitch and each row shifted 32 px right (the next row overdraws the block's
                  bottom-right quarter, which is why only 4 tiles are stored for rows 2-3).
-Palettes are not yet located, so output is greyscale by colour index. Verified by tile-edge continuity scoring:
-neighbouring tiles score ~1.1-1.7 against 3.8 for random pairs (see FINDINGS.md).
+Palettes are not yet located, so output is greyscale by colour index. Layer 1 (ground) is verified: tile-edge
+continuity scores ~1.1-1.7 against 3.8 for random pairs and the render shows streets. Layers 2 and 3 (objects) reference
+a tile page that has not been identified yet, so they currently draw ground tiles; treat --layer 2/3 and --layer 0 as
+experimental until a debugger session pins the page (see FINDINGS.md).
 """
 import os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -32,6 +34,21 @@ POS = {}
 for k in range(4):
     POS[k] = (k, 0); POS[16 + k] = (4 + k, 0); POS[4 + k] = (k, 1); POS[20 + k] = (4 + k, 1)
     POS[8 + k] = (k, 2); POS[12 + k] = (k, 3)
+
+
+def paint(canvas, x0, y0, tile, hflip, vflip, opaque):
+    """Draw one 4bpp tile in greyscale; colour 0 is skipped (transparent) unless opaque."""
+    for i, idx in enumerate(tile):
+        if idx == 0 and not opaque:
+            continue
+        x, y = i % 8, i // 8
+        if hflip:
+            x = 7 - x
+        if vflip:
+            y = 7 - y
+        row = canvas[y0 + y]
+        p = (x0 + x) * 3
+        row[p:p + 3] = bytes(GRAY[idx])
 
 
 def ptr(rom, off):
@@ -93,7 +110,7 @@ def render(rom, rec, layer=1, crop=None, zoom=1, grid=False, origin=(0, 0)):
                     if t >= len(tiles):
                         continue
                     tx, ty = POS[k]
-                    rt.paint(canvas, px + tx * 8, py + ty * 8, tiles[t], GRAY, 0, bool(e & 0x2000), bool(e & 0x1000), li == 0, 4)
+                    paint(canvas, px + tx * 8, py + ty * 8, tiles[t], bool(e & 0x2000), bool(e & 0x1000), li == 0)
     if zoom > 1:
         big = rt.blank_canvas(W * zoom, H * zoom)
         for y in range(H):

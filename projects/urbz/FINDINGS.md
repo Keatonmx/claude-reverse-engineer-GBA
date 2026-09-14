@@ -87,13 +87,15 @@ go through a lighting stage before reaching hardware. Finding the palette source
   random tile pairs, calibrated on 16x16 sprites).** The 24 refs are rows of 8, 8, 4 and 4 tiles of a 64x32 block. The map
   is drawn with a 16 px row pitch and each successive row shifted 32 px to the right, so the next row overdraws the
   block's bottom-right quarter, which is why rows 2-3 only store their left 4 tiles. A tile ref is `bits 0-9` = tile
-  index into the first 1024 tiles of the bank (4bpp, 32 bytes each; all three layers use base 0), `bit 12` = vertical
-  flip, `bit 13` = horizontal flip, `bits 10-11` most likely the palette bank. The metatile blob header is
-  `{u16 count, u16 0, u16 x, u16 x}` with `x` = 0 (layer 1) or 6325 (layers 2-3); it is not a tile base. What the rest
-  of the 610 KB bank is for (only 32 KB is addressed by a 10-bit index) is still open: candidates are per-map-region
-  tile pages selected by the runtime cache table at +0x20, or graphics for other sub-areas of the district.
-  `urbz_level.py render --layer 0` composites the three layers and produces recognisable streets (curbs, pavement
-  stripes, road markings, street furniture) in greyscale.
+  index into a 1024-tile page of the bank (4bpp, 32 bytes each), `bit 12` = vertical flip, `bit 13` = horizontal flip,
+  `bits 10-11` most likely the palette bank. **Layer 1 (ground) uses page base 0 and renders as recognisable streets**
+  (`urbz_level.py render --layer 1`: curbs, pavement stripes, road markings, street furniture, in greyscale).
+  **Layers 2-3 (objects/buildings) use a different page that static scoring cannot identify**: the first ~1,300 bank
+  tiles are self-similar pavement that joins with anything, so every continuity or transparency metric prefers the low
+  region regardless of the true base. Their metatile header is `{u16 count, u16 0, u16 6325, u16 6325}` versus
+  `{636, 0, 0, 0}` for layer 1; 6325 as a tile base did not score better, but it is the obvious lead (it may be a byte or
+  word offset, or an index into the +0x20 cache table). One mGBA session with `watch/w 0x06000000` during a district load
+  resolves it: the copy routine's source address minus the bank start is the page base.
 - **Text**: no ASCII anywhere (`strings` finds nothing but the header and the save signature), so the six-language script uses
   a font-index encoding and is *likely* stored as large blobs referenced from code rather than from the directory
   (search still open; candidates are the 122 large type-4/6 blobs referenced from code).
