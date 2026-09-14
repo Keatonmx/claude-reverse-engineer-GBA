@@ -1,6 +1,6 @@
 ---
 name: gba-reverse-engineering
-description: Reverse engineer Game Boy Advance games and build ROM hacks, level editors, or asset extractors from them. Use this whenever the user mentions a GBA ROM, .gba file, mGBA/No$GBA/VBA debugging, Ghidra or IDA on ARM7TDMI/Thumb code, GBA tilemaps/tilesets/palettes/OAM/VRAM/DMA, BIOS decompression (LZ77 swi 0x11, Huffman, RLE), finding where a level or sprite lives in a ROM, patching or hooking GBA assembly, or wants a "level editor" / "ROM hack" / "extract the maps" for any GBA title, even if they never say "reverse engineering". Also use it for general questions about how GBA games store and load data.
+description: Reverse engineer Game Boy Advance games and build ROM hacks, level editors, or asset extractors from them. Use this whenever the user mentions a GBA ROM, .gba file, mGBA/No$GBA/VBA debugging, Ghidra or IDA on ARM7TDMI/Thumb code, pulling or decompiling the code out of a GBA game, GBA decomp projects, GBA tilemaps/tilesets/palettes/OAM/VRAM/DMA, BIOS decompression (LZ77 swi 0x11, Huffman, RLE), finding where a level or sprite lives in a ROM, patching or hooking GBA assembly, or wants a "level editor" / "ROM hack" / "extract the maps" for any GBA title, even if they never say "reverse engineering". Also use it for general questions about how GBA games store and load data.
 ---
 
 # GBA reverse engineering
@@ -44,7 +44,9 @@ Work from what you can see toward what is stored, one hop at a time, and write d
 10. **Ship a tool or a patch, not a ROM.** Editors take the user's own dump and verify its hash; distribute IPS/BPS diffs.
 
 When a step is ambiguous, the cheaper experiment wins: a memory search or a RAM edit costs seconds, a full static
-analysis costs hours. Static analysis (Ghidra/IDA) is for explaining a routine the debugger already led you to.
+analysis costs hours. Static analysis (Ghidra/IDA) is for explaining a routine the debugger already led you to. Before
+any of it, check whether a matching decompilation project already exists for the game; if it does, work in its C source
+and use the emulator only to locate what to change (`references/code-analysis.md`).
 
 ## Reading the references
 
@@ -55,6 +57,7 @@ Load the one that matches the current step; each is self-contained.
 | To interpret an address, register, tile, OAM entry, DMA channel, or SWI number | `references/gba-hardware.md` |
 | The step-by-step debugger method, emulator breakpoint syntax, Ghidra/IDA setup | `references/debugging-workflow.md` |
 | Compressed data: headers, LZ77/Huffman/RLE bit layouts, chained formats, scanning a ROM | `references/compression.md` |
+| To read or change the *code*: Ghidra setup, mGBA GDB bridge, literal pools, Thumb/ARM mode errors, decomp projects | `references/code-analysis.md` |
 | To modify the ROM: free space, pointer redirects, `bl` hooks, Thumb→ARM stubs, encodings | `references/patching.md` |
 | A complete worked example with every address, table, struct and the loader patch (Klonoa) | `references/klonoa-case-study.md` |
 
@@ -98,6 +101,7 @@ Cite evidence for every row (the breakpoint that fired, the value that changed).
 - Chained compression: decode Huffman then LZ77; encode LZ77 then Huffman. The bundled `--chain` peels layers automatically.
 - Saving a bigger asset in place corrupts the next asset; the failure shows up in a *different* level.
 - Thumb `bl` clobbers `lr`; pc reads +4 in Thumb and +8 in ARM; ARM code must be word aligned; `bx` needs bit 0 set for Thumb targets.
+- Disassembly that reads as nonsense is almost always the wrong mode (set Thumb) or a literal pool (data after the function), not encryption.
 - Region/revision moves every address. Pin the dump by SHA-1 and say so in the deliverable.
 - Legal and practical: work on the user's own dump, never distribute ROMs, ship patches or an editor. Buying the game
   keeps the franchise alive, which is why editors like klo-gba.js ask for it.

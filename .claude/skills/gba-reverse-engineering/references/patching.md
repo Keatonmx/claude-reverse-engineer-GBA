@@ -92,7 +92,13 @@ checks them against the bytes above.
 
 ARM instructions are 4-byte little-endian words; Thumb are 2-byte little-endian halfwords. ARM code must start on a
 4-byte boundary, Thumb on 2. If `arm-none-eabi-as`/`objdump` (devkitARM) is installed, assemble a `.s` file instead and
-copy the bytes; the table is for when it is not.
+copy the bytes; the table is for when it is not. `pip install keystone-engine capstone` gives an assembler/disassembler
+in Python for cross-checking (`KS_ARCH_ARM, KS_MODE_THUMB`, address-aware for pc-relative forms).
+
+ARMv4T specifics that bite people coming from newer ARM: there is **no `blx`** (switch state only with `bx`), `pop {pc}`
+and `ldr pc, [...]` do **not** interwork (they keep the current state; use `pop {r0}; bx r0` to return into the other
+state), the Thumb `nop` is `46 C0` (`mov r8, r8`; `BF 00` is undefined on this core), and a `str` to a ROM address is
+silently ignored, so the pointer you swap must live in RAM or be substituted in a register before use.
 
 ## 5. Marking and verifying
 

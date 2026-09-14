@@ -16,6 +16,7 @@ automatically by Claude Code when this repository is open. To use it elsewhere, 
 | `references/gba-hardware.md` | Memory map, video/tiles/OAM/DMA, BIOS calls, CPU conventions, cartridge header |
 | `references/debugging-workflow.md` | The VRAM → DMA → WRAM → decompressor → ROM hop chain, finding physics and object tables, mGBA/No$GBA cheat sheets, Ghidra/IDA setup |
 | `references/compression.md` | GBA LZ77 / Huffman / RLE bit layouts, chained formats, locating compressed assets, re-compression strategy |
+| `references/code-analysis.md` | Reading and changing code: Ghidra setup, mGBA GDB bridge, literal pools and Thumb/ARM mode pitfalls, decompilation projects |
 | `references/patching.md` | Free space, pointer redirects, `bl` hooks with Thumb→ARM stubs, hand-assembly encodings, verification, distribution |
 | `references/klonoa-case-study.md` | The complete worked example: every table, structure, address and the loader patch from klo-gba.js |
 | `scripts/gba_compress.py` | Decode/encode/scan GBA BIOS compression formats |
