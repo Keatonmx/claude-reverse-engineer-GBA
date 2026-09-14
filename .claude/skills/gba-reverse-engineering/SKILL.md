@@ -40,9 +40,12 @@ Work from what you can see toward what is stored, one hop at a time, and write d
 8. **Decode structures by perturbation.** Change one field (in RAM or ROM), reload, observe. Record layouts in a table
    with offsets, types and the evidence.
 9. **Write back without breaking neighbours.** Recompressed data grows. Put it in free space
-   (`gba_rom.py freespace`), redirect the pointer, or hook the loader (`scripts/thumb_patch.py hook`). Re-execute
-   displaced instructions, return with `bx lr`, stamp the ROM so tools can recognise it, test the levels before and after.
-10. **Ship a tool or a patch, not a ROM.** Editors take the user's own dump and verify its hash; distribute IPS/BPS diffs.
+   (`gba_rom.py freespace`), redirect the pointer, or hook the loader (`scripts/thumb_patch.py hook`). If the game's
+   loader dispatches on a type byte, re-encode in a BIOS format it already accepts instead of writing a custom encoder.
+   Re-execute displaced instructions, return with `bx lr`, stamp the ROM so tools can recognise it, test the levels before
+   and after, and prove the edit in the emulator (RAM copy equals the edit, the frame changes, the behaviour changes).
+10. **Ship a tool or a patch, not a ROM.** Editors take the user's own dump and verify its hash; distribute
+    IPS/UPS/BPS diffs (`scripts/gba_patchfile.py`; UPS or BPS when the ROM is over 16 MB).
 
 When a step is ambiguous, the cheaper experiment wins: a memory search or a RAM edit costs seconds, a full static
 analysis costs hours. Static analysis (Ghidra/IDA) is for explaining a routine the debugger already led you to. Before
@@ -73,6 +76,7 @@ Run `python3 scripts/test_scripts.py` once if in doubt; the vectors include the 
 | `scripts/gba_compress.py` | `info`, `decompress [--chain]`, `compress --type lz77,huffman [--vram]`, `scan` a ROM for compressed blocks. Importable: `lz77_decompress`, `huffman_compress`, ... |
 | `scripts/gba_rom.py` | `header`, `pointers` (who references an offset), `table` (dump fixed-stride records with typed fields), `freespace`, `dump`, `u16/u32` |
 | `scripts/thumb_patch.py` | Encode Thumb `bl`/`b`, ARM `b`, pc-relative `ldr` for both states, the Thumb→ARM stub, and a full `hook` recipe with file offsets |
+| `scripts/gba_patchfile.py` | `make`/`apply` IPS and UPS patch files with CRC checks; UPS for ROMs over 16 MB |
 | `scripts/render_tiles.py` | Render 4bpp/8bpp tiles + BGR555 palette to PNG: tileset sheets, byte-indexed or screen-entry tilemaps, palette swatches |
 | `scripts/emu/` | Headless mGBA tools (C, built by `build.sh` against libmgba): `harness` runs scripted input and dumps RAM/VRAM/palette/OAM/IO, `trace` logs watchpoint/breakpoint hits with registers, `oracle` calls a ROM routine on chosen inputs, `topng.py` renders a dumped frame |
 
@@ -104,6 +108,10 @@ Cite evidence for every row (the breakpoint that fired, the value that changed).
   small header (Klonoa: 4 bytes) before the payload.
 - Chained compression: decode Huffman then LZ77; encode LZ77 then Huffman. The bundled `--chain` peels layers automatically.
 - Saving a bigger asset in place corrupts the next asset; the failure shows up in a *different* level.
+- IPS offsets are 24-bit: an edit past 16 MB silently cannot be expressed. Use UPS/BPS for 32 MB ROMs.
+- Scripted behavioural tests fail on the first blocking dialogue, not on your patch. Record the exact input route through
+  menus and dialogues (long boxes may scroll with the D-pad before A closes them) and run the control ROM through the
+  same script.
 - Thumb `bl` clobbers `lr`; pc reads +4 in Thumb and +8 in ARM; ARM code must be word aligned; `bx` needs bit 0 set for Thumb targets.
 - Disassembly that reads as nonsense is almost always the wrong mode (set Thumb) or a literal pool (data after the function), not encryption.
 - Region/revision moves every address. Pin the dump by SHA-1 and say so in the deliverable.

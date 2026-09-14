@@ -15,7 +15,8 @@ skill ships with.
 4. The district format: structure-of-arrays metatiles, a tile cache, a raw palette
 5. Verification method (pixel-exact against a running frame)
 6. Traps that produced convincing wrong answers
-7. Findings table
+7. Write-back without an encoder for the custom format
+8. Findings table
 
 ## 1. Order of work
 
@@ -141,7 +142,29 @@ loaded in the emulator.
   immediately after `loadState`, crashed the emulator. Use `ThumbWritePC`, re-prime the pipeline, and step until the
   PC is in ROM in System mode before writing registers (`headless-emulation.md`).
 
-## 7. Findings table
+## 7. Write-back without an encoder for the custom format
+
+The type-6 format has no encoder, and writing one is days of work. The dispatcher made it unnecessary: the type-1 branch
+passes the resource header straight to `swi 0x11`, and `0x10 | size<<8` is exactly the BIOS LZ77 header. So an edited
+asset is stored as BIOS LZ77 in the zero tail of the ROM (32 KB at `0x1FF823D+`), the record pointer is redirected, and
+the game decodes it with the BIOS. Two details: the Diff16 flag (bit 7) must stay clear, so the payload is the unfiltered
+data; and IPS cannot express offsets past 16 MB, so the patch ships as UPS (`scripts/gba_patchfile.py`).
+
+The proof was a 2x5-metatile block next to the start position, edited in the ground map and the collision map of the
+first district. Three independent confirmations, in increasing strength:
+
+1. The RAM copies of both blobs equal the edited data after the district loads (and the original data in a control run).
+2. The first district frame differs from the control in 4,564 pixels, all inside the block, and the ROM renderer
+   predicts the same picture from the patched ROM.
+3. Behaviour: with the same scripted input, holding Left for 290 frames moves the control run's camera from `BG2HOFS=204`
+   to `0` while the patched run stays at `204` (the Sim walks in place against the block); holding Down afterwards moves
+   both. That also settles the collision semantics: byte `0x03` blocks, the Sim walks on `0x40`/`0x43`.
+
+The behavioural test cost more than the patch: the district opens with a scripted dialogue whose long boxes scroll line
+by line with the D-pad and only close on A once fully shown. Every input cadence that ignored this looked like "the game
+hung". Record the exact route through such dialogues once and keep the script with the project.
+
+## 8. Findings table
 
 | Item | Value | Evidence |
 |---|---|---|
@@ -155,7 +178,9 @@ loaded in the emulator.
 | Palettes | record `+0x48`, 512 raw bytes; OBJ palettes pass through a remap LUT routine at `0x08015E58` | palette RAM dump; literal `0x05000200` callers |
 | Save signature | `URBZ0011` at `0x9A2CC`; save module `0x4C900-0x4DB00` | string + pointer search |
 | Free space | `0x1FF823D-0x1FFFFFF` (32,195 bytes) | `gba_rom.py freespace` |
-| Open | text/font encoding (no ASCII in the ROM), object placement list semantics, save layout, type-6 encoder | — |
+| Write-back | type-6 blob → BIOS LZ77 blob (type nibble 1, no filter flag) in the tail, pointer redirected, UPS patch | RAM copies, frame diff and blocked movement in the emulator |
+| Collision | map `u16 count, u16 0, w*h u16 ids`; metatile 16 bytes = 4x4 cells of 8 px; `0x03` blocks, `0x40`/`0x43` walkable | wall test |
+| Open | text/font encoding (no ASCII in the ROM), object placement list semantics, save layout; a type-6 encoder only if the tail free space runs out | — |
 
 ## What generalises
 
@@ -168,3 +193,5 @@ loaded in the emulator.
   resolve through the cache or compare pixels.
 - Signature scans beat stride guesses when records are not in a table.
 - Verify against the running game before trusting any renderer, and identify what is loaded by its least-shared data.
+- A type-dispatching loader is a free write-back path: store edits in the BIOS format it already accepts.
+- Prove a patch three ways (RAM copy, frame, behaviour) with the control ROM run through the identical input script.

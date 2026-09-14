@@ -17,6 +17,10 @@ still boots, still plays every other level, and can be distributed as a diff rat
    Fails silently when the blob grows: it overwrites the next asset (Klonoa Part 7: level N worked, level N+1 crashed).
 2. **Pointer redirect.** Put the new blob in free space and change the table entry that pointed at the old one
    (`gba_rom.py pointers rom.gba <old>` finds it). Works when the address is read from a table.
+2b. **Reuse a decoder the loader already has.** Many engines dispatch on a header type byte (Urbz: nibble 0 raw, 1 LZ77,
+   2 Huffman, 3 RLE, 4/6 custom). If the game's own format has no encoder, store the edited asset in a BIOS format the same
+   dispatcher accepts and change the type byte; no code changes and no custom encoder. Check that any post-filter flag
+   (Urbz bit 7 = Diff16) is clear, since the BIOS decoders reject the flagged header, and feed them the unfiltered data.
 3. **Code hook.** The address is computed or the table is shared by logic you cannot change in place. Insert a branch
    to your own code in free space, do the extra work there, re-execute what you displaced, return. This is what
    klo-gba.js does, because Klonoa's loader derives the tilemap address in code.
@@ -112,5 +116,7 @@ silently ignored, so the pointer you swap must live in RAM or be substituted in 
 
 ## 6. Distribute patches, not ROMs
 
-Ship an IPS/BPS/xdelta patch or an editor that takes the user's own dump (klo-gba.js runs entirely in the browser on a
-user-supplied ROM and never hosts one). Say which dump (region + SHA-1) the patch expects.
+Ship an IPS/BPS/UPS/xdelta patch or an editor that takes the user's own dump (klo-gba.js runs entirely in the browser on a
+user-supplied ROM and never hosts one). Say which dump (region + SHA-1) the patch expects. IPS offsets are 24-bit, so a
+32 MB ROM patched in its tail free space needs UPS or BPS; `scripts/gba_patchfile.py make orig.gba mod.gba out.ups`
+writes either format and `apply` checks the CRCs.

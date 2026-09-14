@@ -23,3 +23,7 @@ Built against libmgba (static) so the game can be driven and inspected without a
   decompressed bytes. Used to prove `urbz_codec.py` is byte-exact (type 6, type 6 + Diff16) and usable on anything
   the Python decoder cannot handle.
 * `bgpal.bin` / `objpal.bin` — palette RAM captured in the first district (BG banks 0-15, OBJ banks 0-15).
+* `probe26_walltest.txt` — the route from state `s2` to the first district, through the opening dialogue (A, A, Down x30,
+  A x18), then Left held for 290 frames and Down for 290 frames with `regs`/`dump`/`shot` checkpoints. Run it on the
+  original and on `urbz_patch.py demo` output and compare `BG2HOFS`: the patched Sim stays put against the new wall.
+  Copy `p10_s2.state` to `<prefix>_s2.state` first; mGBA only warns when a state comes from a differently patched ROM.

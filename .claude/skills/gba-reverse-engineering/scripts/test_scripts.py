@@ -15,6 +15,7 @@ import gba_compress as gc  # noqa: E402
 import thumb_patch as tp  # noqa: E402
 import gba_rom as gr  # noqa: E402
 import render_tiles as rt  # noqa: E402
+import gba_patchfile as pf  # noqa: E402
 
 
 class TestLZ77(unittest.TestCase):
@@ -183,6 +184,47 @@ class TestRender(unittest.TestCase):
         w, h = struct.unpack(">II", png[16:24])
         self.assertEqual((w, h), (16, 16))
         self.assertEqual(rt.decode_palette(pal[:2]), [(0, 0, 0)])
+
+
+class TestPatchfile(unittest.TestCase):
+    def _pair(self, size, edits, grow=0):
+        rnd = random.Random(7)
+        orig = bytes(rnd.randrange(256) for _ in range(size))
+        mod = bytearray(orig) + bytes(grow)
+        for off, data in edits:
+            mod[off:off + len(data)] = data
+        return orig, bytes(mod)
+
+    def test_ips_roundtrip(self):
+        orig, mod = self._pair(5000, [(10, b"hello"), (4000, bytes(300)), (4999, b"Z")])
+        p = pf.ips_make(orig, mod)
+        self.assertTrue(p.startswith(b"PATCH") and p.endswith(b"EOF"))
+        self.assertEqual(pf.ips_apply(orig, p), mod)
+
+    def test_ips_rle_record(self):
+        orig = bytes(64)
+        p = b"PATCH" + bytes([0, 0, 8]) + struct.pack(">H", 0) + struct.pack(">HB", 4, 0xAB) + b"EOF"
+        self.assertEqual(pf.ips_apply(orig, p)[8:12], b"\xab" * 4)
+
+    def test_ips_refuses_large(self):
+        with self.assertRaises(ValueError):
+            pf.ips_make(bytes(4), bytes(0x1000001))
+
+    def test_ups_roundtrip_and_growth(self):
+        orig, mod = self._pair(3000, [(0, b"\x01"), (1500, b"abc"), (3000, b"tail data")], grow=2000)
+        p = pf.ups_make(orig, mod)
+        self.assertTrue(p.startswith(b"UPS1"))
+        self.assertEqual(pf.ups_apply(orig, p), mod)
+        with self.assertRaises(ValueError):
+            pf.ups_apply(orig[:-1] + b"\x00", p)  # wrong input ROM
+
+    def test_ups_large_offset(self):
+        # a change past 16 MB, which IPS cannot express
+        orig = bytes(0x1000010)
+        mod = orig[:0x1000004] + b"\xde\xad" + orig[0x1000006:]
+        p = pf.ups_make(orig, mod)
+        self.assertLess(len(p), 40)
+        self.assertEqual(pf.ups_apply(orig, p), mod)
 
 
 if __name__ == "__main__":

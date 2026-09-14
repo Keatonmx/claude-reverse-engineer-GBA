@@ -73,7 +73,7 @@ go through a lighting stage before reaching hardware. Finding the palette source
   `0x92000` shows repeated rows of five function pointers + a flags word (`01 01 00 05`) = object/state dispatch tables.
 - **Item table** at `0x75000`: 20-byte records `{ptr → 0x149xxxx descriptor, 5 bytes of parameters (10/21/21/21/21, 50/6/6/6/6…), pad, u32 id}`
   with sequential ids `0x3D6, 0x3D7, …`.
-- **District records (verified in the emulator, see section 7)**: 80-byte records in `0x73000-0x7A000`, found by
+- **District records (verified in the emulator, see section 6)**: 80-byte records in `0x73000-0x7A000`, found by
   signature (`urbz_level.py list`), each:
 
   | Offset | Content |
@@ -117,11 +117,10 @@ go through a lighting stage before reaching hardware. Finding the palette source
    pointer change. Money/skill gain constants live in the functions those tables reference.
 5. **Lighting and palette hacks** — *hours*. The remap LUT used by `0x08015E58` controls tint; patching it yields
    night/sepia/colour-blind modes without touching any asset.
-6. **District/level editor** — *days*. The record format is fully decoded and verified against the running game, and
-   `urbz_level.py` renders any district in colour exactly as it appears on screen. An editor needs a type-6 encoder (or
-   re-saving maps/metatiles as BIOS LZ77 with the type nibble changed to 1, which the loader accepts) plus free space
-   for grown blobs (the 32 KB tail, or an IPS-style pointer redirect). Collision edits are already possible today: the collision map is a plain u16 grid over 16-byte metatiles, so
-   walls/walkable areas can be moved with `urbz_codec` + a type-6 encoder or by storing the edited map as BIOS LZ77 (type 1).
+6. **District/level editor** — *days*, **write-back path done** (section 7). The record format is fully decoded and
+   verified against the running game, `urbz_level.py` renders any district in colour exactly as it appears on screen, and
+   `urbz_patch.py` writes edited maps and collision back as BIOS LZ77 blobs in free space with a UPS patch as output.
+   What remains is the editing UI and, if the 32 KB tail runs out, a type-6 encoder or a smarter free-space plan.
 7. **Sound replacement** — *weeks*. Custom driver, raw 8-bit PCM at `0x1100000+`; sample swaps are feasible once the
    sample table is found, music sequencing would need the driver reversed.
 
@@ -134,8 +133,39 @@ register values, and the game's own loader was called on ROM blobs to prove the 
 recording: two adjacent records share most tile graphics at different indices, so matching VRAM tiles against the wrong
 record's bank produced a convincing but false "remap"; the map/metatile RAM comparison settled which record was loaded.
 
-## 7. Remaining leads
+## 7. Write-back (done, verified in the emulator)
 
+The loader's type-1 branch passes the resource header itself to `swi 0x11`, and a resource header with type nibble 1
+and no flags (`0x10 | size<<8`) *is* the BIOS LZ77 header. So any custom type-6 blob can be replaced by a plain BIOS LZ77
+blob without a type-6 encoder: decode with `urbz_codec`, edit, `lz77_compress`, drop the blob in the zero tail
+(`0x1FF8240+`), and rewrite the record pointer. The Diff16 flag must stay clear (`0x90` is not a BIOS header), so the
+LZ77 payload is the unfiltered data. `urbz_patch.py` does this and emits a UPS patch (IPS offsets stop at 16 MB).
+
+Proof of concept `urbz_patch.py demo`: a 2x5-metatile block at map cells (8..9, 7..11) of the first district, visual
+metatile 0 on the ground layer (`map0`, 956 B → 824 B LZ77) and collision metatile 0 (`collmap`, 954 B → 284 B).
+Verified with `emu/probe26_walltest.txt` on the original and the patched ROM:
+
+- The RAM copies of the map (`0x0201CD20`) and collision map (`0x02026260`) equal the edited data in the patched run and
+  the original data in the control run.
+- Frame at the district's first visible frame: 4,564 pixels differ, all inside the block; `urbz_level.py render` of the
+  patched ROM predicts the same picture.
+- Behaviour: after the opening dialogue the Sim stands at world metatile (10, 8), immediately right of the block. Holding
+  Left for 290 frames scrolls the original from `BG2HOFS=204` to `0` (the Sim crosses the map) and leaves the patched
+  run at `204` for the whole time (blocked; the walking animation plays in place). Holding Down afterwards moves the Sim in
+  both, so nothing is frozen. Collision byte `0x03` therefore blocks movement; the Sim walks on `0x40`/`0x43` cells.
+- The UPS patch is 1,416 bytes and re-applies to the original dump byte-exactly (`gba_patchfile.py apply`).
+
+Collision map layout, corrected: `u16 count` (number of collision metatiles, 74 here), `u16 0`, then `width*height` u16
+metatile ids using the visual map's width and height (25x19); each collision metatile is 16 bytes = 4x4 cells of 8x8 px.
+
+Scripted route past the opening dialogue (needed for any behavioural test): A at frame 3120 and 3300, then Down every 30
+frames from 3500 to 4400 (long boxes scroll line by line with the D-pad and only close on A once fully shown), then A
+every 60 frames from 4500; the district is under player control by frame 4600 (`BG2HOFS` leaves 0).
+
+## 8. Remaining leads
+
+0. **Type-6 encoder** (optional): only needed when LZ77 re-encoding of many blobs outgrows the 32 KB tail. Alternative:
+   reclaim the space of the replaced original blobs (they are no longer referenced) with a small free-list in the patcher.
 1. Break on `0x0801EC00` (loader) with a save state in a district; log r0 (source) for every call → maps directory records
    to on-screen objects and finds the font. Then `watch/w 0x06000000` (charblock 0) after a district load to catch the
    tile-bank → VRAM copy: it tells which bank pages beyond the first 1024 tiles are used and when (the +0x20 table is the
@@ -149,3 +179,5 @@ record's bank produced a convincing but false "remap"; the map/metatile RAM comp
 - `urbz_codec.py` — decoders for header types 0-4 and 6 (`decode(rom, offset)`), CLI: `urbz_codec.py rom.gba 0xA054D4 out.bin`
 - `urbz_dump.py` — directory parser and exporter (`list`, `png`, `raw`)
 - `urbz_level.py` — level record parser and layer renderer (`list`, `render --layer N --crop --origin --zoom`)
+- `urbz_patch.py` — write-back: `demo` (the wall proof of concept), `replace rom out record field raw.bin`, `--ups out.ups`, `ups-apply`
+- `emu/probe26_walltest.txt` — harness script: power-on state → district → through the dialogue → walk Left and Down with register dumps
