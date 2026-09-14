@@ -1,0 +1,23 @@
+{
+  "skill_name": "gba-reverse-engineering",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I have a dump of a GBA platformer (rom.gba, USA cart, I dumped it myself). In mGBA I can see the level's ground tiles on BG1 but when I edit them in the VRAM viewer they snap back next frame. I want to eventually build a level editor. Walk me through exactly how to get from that VRAM tile to the compressed level data in the ROM, including the breakpoints I should set and what registers to read, and how I'd confirm the compression format once I have an address.",
+      "expected_output": "A step-by-step plan following the VRAM -> DMA/CPU copy -> WRAM -> decompressor (SWI r0/r1) -> ROM chain, with concrete mGBA watchpoint commands, mention of DMA source registers, BIOS SWI numbers and r0/r1 semantics, the 4-byte compression header meaning, and the bundled gba_compress.py usage. Should also mention pointer hunting and a findings log.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Here is a 16-byte blob I found at ROM offset 0x1B27FC in a GBA game: 10 73 62 00 00 01 02 03 04 05 06 07 F0 08 30 00. What format is it, how big is the decompressed data, and write me a Python decoder for this format that I can run on the whole block. Also: if I later modify the decompressed data and it gets bigger when I recompress it, what should I do?",
+      "expected_output": "Identifies GBA BIOS LZ77 (type 0x10), decompressed size 0x6273 = 25203 bytes, explains flag byte/reference encoding (length = high nibble + 3, displacement = 12 bits + 1), provides a correct decoder (ideally reusing/pointing to scripts/gba_compress.py), and recommends relocating to free space plus pointer redirect or loader hook rather than in-place write.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "I need to hook a Thumb function in a GBA ROM at bus address 0x08043B0C so it jumps to my own code which I'll put in the free space at 0x08367610, run some ARM code there that swaps a pointer, and then return. Give me the exact bytes to write at each address and explain the pitfalls (lr, displaced instructions, thumb vs arm). I don't have devkitARM installed.",
+      "expected_output": "Correct Thumb BL encoding 23 F3 80 FD at file offset 0x43B0C, a Thumb->ARM stub (mov r0,pc; add r0,#n; bx r0 = 78 46 xx 30 00 47) at 0x367610, ARM body ending with re-executed displaced instruction and bx lr (1E FF 2F E1), notes on lr clobbering, pc+4/pc+8 semantics, word alignment, and ideally uses thumb_patch.py hook.",
+      "files": []
+    }
+  ]
+}
