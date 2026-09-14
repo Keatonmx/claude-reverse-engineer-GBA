@@ -119,6 +119,12 @@ Cite evidence for every row (the breakpoint that fired, the value that changed).
   ROM bytes it came from, and prove your translation by calling the game's routine on the same input (the oracle pattern).
   "Decodes to the declared size" does not catch an inverted branch condition or a wrong flag bit.
 - Games with a VRAM tile cache break "VRAM tile index = asset tile index"; resolve through the cache table or compare pixels.
+- Writing an encoder for a custom format: the game's decoder is the only judge. ARM decoders often fetch bitstreams as
+  32-bit words (pad headers/dictionaries to a multiple of 4, place blobs aligned), and branches of your translated
+  decoder that shipped data never exercises may be wrong; gather token statistics over the shipped blobs first, then
+  verify every encoder variant through the emulator oracle before trusting it.
+- A "list" that decodes to sparse fixed-size rows with a small integer link field is a hash map keyed by position;
+  a fixed set of total sizes independent of the map size is the giveaway.
 - Metatile tables may be structure-of-arrays (all tile refs, then all attributes); an array-of-structs reading parses fine
   and renders plausible garbage. Verify against the running frame, cell by cell, before trusting a renderer.
 - Adjacent records often share graphics. Identify the loaded record by its least-shared data (the map), not by its tiles,

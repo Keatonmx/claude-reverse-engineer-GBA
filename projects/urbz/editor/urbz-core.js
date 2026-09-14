@@ -35,7 +35,7 @@
     code() { let n = 0; while (n < 7 && this.bit()) n++; return n ? ((1 << n) | this.bits(n)) : 1; }
   }
 
-  function decodeType6(data, offset, size) {
+  function decodeType6(data, offset, size, info) {
     if (size == null) size = u32(data, offset) >>> 8;
     let p = offset + 4;
     const w0 = u32(data, p); p += 4;
@@ -77,11 +77,12 @@
         for (let i = 0; i < total; i++) out[n++] = fill;
       }
     }
+    if (info) info.end = br.pos;
     return out.subarray(0, size);
   }
 
-  function lz77Decode(data, offset) {
-    if ((data[offset] >> 4) !== 1) throw new Error("not an LZ77 header");
+  function lz77Decode(data, offset, info) {
+    if (((data[offset] >> 4) & 7) !== 1) throw new Error("not an LZ77 header");
     const size = u32(data, offset) >>> 8;
     const out = new Uint8Array(size); let n = 0, p = offset + 4;
     while (n < size) {
@@ -94,6 +95,19 @@
         } else out[n++] = data[p++];
       }
     }
+    if (info) info.end = p;
+    return out;
+  }
+
+  function rleDecode(data, offset, info) {
+    const size = u32(data, offset) >>> 8;
+    const out = new Uint8Array(size); let n = 0, p = offset + 4;
+    while (n < size) {
+      const f = data[p++];
+      if (f & 0x80) { const len = (f & 0x7F) + 3, b = data[p++]; for (let i = 0; i < len && n < size; i++) out[n++] = b; }
+      else { const len = (f & 0x7F) + 1; for (let i = 0; i < len && n < size; i++) out[n++] = data[p++]; }
+    }
+    if (info) info.end = p;
     return out;
   }
 
@@ -106,29 +120,32 @@
     return out;
   }
 
-  function decode(rom, off) {
+  function decode(rom, off, info) {
     const t = (rom[off] >> 4) & 7, size = u32(rom, off) >>> 8;
     let out;
-    if (t === 0) out = rom.slice(off + 4, off + 4 + size);
-    else if (t === 1) out = lz77Decode(rom, off);
-    else if (t === 6) out = decodeType6(rom, off);
+    if (t === 0) { out = rom.slice(off + 4, off + 4 + size); if (info) info.end = off + 4 + size; }
+    else if (t === 1) out = lz77Decode(rom, off, info);
+    else if (t === 3) out = rleDecode(rom, off, info);
+    else if (t === 6) out = decodeType6(rom, off, undefined, info);
     else throw new Error("unsupported resource type " + t + " at 0x" + off.toString(16));
     if (rom[off] & 0x80) out = unfilter16(out);
     return out;
   }
+  // Byte extent of a resource blob in the ROM (header to end of stream, 4-byte aligned).
+  function blobExtent(rom, off) {
+    const info = {}; decode(rom, off, info);
+    return ((info.end + 3) & ~3) - off;
+  }
 
   // ------------------------------------------------------------------ records and level model
+  // The district table: 80-byte records on a fixed 0x50 stride from 0x73568 (the game computes 0x08073568 + index*0x50).
   function records(rom) {
-    const out = []; let off = 0x73000;
-    while (off + 0x50 <= 0x7A000) {
-      let ok = true;
-      for (let i = 0; i < 3 && ok; i++) {
-        const base = F_LAYERS[i], a = ptr(rom, off + base), b = ptr(rom, off + base + 4);
-        if (a === null || b === null) { if (i === 0 || u32(rom, off + base) !== 0) ok = false; continue; }
-        if (((rom[a] >> 4) & 7) !== 6 || ((rom[b] >> 4) & 7) !== 6) ok = false;
-      }
-      const bank = ptr(rom, off + F_BANK), pal = ptr(rom, off + F_PALETTE);
-      if (ok && bank !== null && pal !== null && (rom[bank] >> 4) === 0) { out.push(off); off += 0x50; } else off += 4;
+    const out = [];
+    for (let i = 0; ; i++) {
+      const off = 0x73568 + i * 0x50;
+      const m = ptr(rom, off), t = ptr(rom, off + 4), bank = ptr(rom, off + F_BANK);
+      if (m === null || t === null || bank === null || (rom[bank] >> 4) !== 0) break;
+      out.push(off);
     }
     return out;
   }
@@ -160,7 +177,7 @@
       const refs = new Uint16Array(n * 16);
       for (let i = 0; i < n * 16; i++) refs[i] = u16(mt, 4 + i * 2);
       const attrs = mt.slice(4 + n * 32, 4 + n * 32 + n * 16);
-      return { w, h, cells, n, refs, attrs, raw: tm, metaHeader: mt.slice(0, 8) };
+      return { w, h, cells, n, refs, attrs, raw: tm, metaRaw: mt };
     });
     const cm = ptr(rom, rec + F_COLL_MAP), cmeta = ptr(rom, rec + F_COLL_META);
     let collision = null;
@@ -290,6 +307,111 @@
     return res;
   }
 
+
+  // ------------------------------------------------------------------ type-6 encoder (optimal parse)
+  function filter16(d) {
+    const out = new Uint8Array(d); let prev = 0;
+    for (let i = 0; i + 1 < out.length; i += 2) { const v = out[i] | (out[i + 1] << 8); const x = (v - prev) & 0xFFFF; prev = v; out[i] = x & 0xFF; out[i + 1] = x >> 8; }
+    return out;
+  }
+  class BitWriter {
+    constructor() { this.words = []; this.cur = 0; this.n = 0; }
+    bit(b) { this.cur = ((this.cur << 1) | (b & 1)) >>> 0; if (++this.n === 32) { this.words.push(this.cur); this.cur = 0; this.n = 0; } }
+    bits(v, n) { for (let i = n - 1; i >= 0; i--) this.bit((v >>> i) & 1); }
+    code(v) { const n = 31 - Math.clz32(v); for (let i = 0; i < n; i++) this.bit(1); if (n < 7) this.bit(0); this.bits(v & ((1 << n) - 1), n); }
+    finish() {
+      if (this.n) this.words.push((this.cur << (32 - this.n)) >>> 0);
+      this.words.push(0);
+      const out = new Uint8Array(this.words.length * 4);
+      this.words.forEach((w, i) => { out[i * 4] = w & 0xFF; out[i * 4 + 1] = (w >>> 8) & 0xFF; out[i * 4 + 2] = (w >>> 16) & 0xFF; out[i * 4 + 3] = w >>> 24; });
+      return out;
+    }
+  }
+  const costCode = (v) => { const k = 31 - Math.clz32(v); return 2 * k + (k < 7 ? 1 : 0); };
+  const MATCH_LENS = [3, 4, 8, 16, 32, 64, 128, 256], FILL_LENS = [2, 3, 4, 8, 16, 32, 64, 128];
+
+  function encodeType6Stream(raw, nC, esc, table) {
+    const nA = 8 - nC, n = raw.length;
+    const tblIndex = new Int16Array(256).fill(-1); table.forEach((b, i) => { if (tblIndex[b] < 0) tblIndex[b] = i + 1; });
+    const litCost = (v) => (nC && (v >> nA) !== esc ? 8 : nC + 11);
+    const fillCost = (r, f) => { if (tblIndex[f] < 0) return 1e9; const c = nC + 3 + (r <= 128 ? costCode(r - 1) : 16 + costCode(((r - 1) >> 8) + 1)); return c + costCode(tblIndex[f]); };
+    const runlen = new Int32Array(n + 1); runlen[n] = 0; if (n) runlen[n - 1] = 1;
+    for (let i = n - 2; i >= 0; i--) runlen[i] = raw[i] === raw[i + 1] ? runlen[i + 1] + 1 : 1;
+    const short = new Int32Array(n); const pairs = new Map(); const heads = new Map(); const cands = new Array(n);
+    for (let i = 0; i < n; i++) {
+      if (i + 2 <= n) { const k2 = (raw[i] << 8) | raw[i + 1]; const j = pairs.get(k2); if (j !== undefined && i - j <= 256) short[i] = i - j; pairs.set(k2, i); }
+      if (i + 3 <= n) { const k3 = (raw[i] << 16) | (raw[i + 1] << 8) | raw[i + 2]; let lst = heads.get(k3); if (!lst) heads.set(k3, lst = []); cands[i] = lst.slice(-12); lst.push(i); }
+    }
+    const cost = new Float64Array(n + 1); const chKind = new Uint8Array(n), chLen = new Int32Array(n), chDist = new Int32Array(n);
+    cost[n] = 0;
+    for (let i = n - 1; i >= 0; i--) {
+      const b = raw[i]; let best = litCost(b) + cost[i + 1], kind = 0, len = 1, dist = 0;
+      const r = Math.min(runlen[i], 65280);
+      if (r >= 2) for (const L of FILL_LENS.concat([r])) if (L >= 2 && L <= r) { const c = fillCost(L, b) + cost[i + L]; if (c < best) { best = c; kind = 1; len = L; } }
+      if (short[i]) { const c = nC + 10 + cost[i + 2]; if (c < best) { best = c; kind = 3; len = 2; dist = short[i]; } }
+      if (cands[i] && cands[i].length) {
+        const lim = Math.min(256, n - i);
+        for (let ci = cands[i].length - 1; ci >= 0; ci--) {
+          const j = cands[i][ci], d = i - j; if (d > 254 * 256) continue;
+          let L = 3; while (L < lim && raw[j + L] === raw[i + L]) L++;
+          const dc = nC + costCode(((d - 1) >> 8) + 1) + 8;
+          for (const LL of MATCH_LENS.concat([L])) if (LL >= 3 && LL <= L) { const c = dc + costCode(LL - 1) + cost[i + LL]; if (c < best) { best = c; kind = 2; len = LL; dist = d; } }
+        }
+      }
+      cost[i] = best; chKind[i] = kind; chLen[i] = len; chDist[i] = dist;
+    }
+    const bw = new BitWriter();
+    for (let i = 0; i < n;) {
+      const kind = chKind[i], L = chLen[i], dist = chDist[i];
+      if (kind === 0) { const v = raw[i]; if (nC && (v >> nA) !== esc) bw.bits(v, 8); else { bw.bits(esc, nC); bw.bit(0); bw.bit(1); bw.bit(0); bw.bits(esc, nC); bw.bits(v & ((1 << nA) - 1), nA); } }
+      else if (kind === 1) { bw.bits(esc, nC); bw.bit(0); bw.bit(1); bw.bit(1); if (L <= 128) bw.code(L - 1); else { const cnt = (L - 1) & 0xFF, hi = (L - 1) >> 8; bw.code(0x80 | (cnt >> 1)); bw.bit(cnt & 1); bw.code(hi + 1); } bw.code(tblIndex[raw[i]]); }
+      else if (kind === 2) { const d = dist - 1; bw.bits(esc, nC); bw.code(L - 1); bw.code((d >> 8) + 1); bw.bits(d & 0xFF, 8); }
+      else { bw.bits(esc, nC); bw.bit(0); bw.bit(0); bw.bits(dist - 1, 8); }
+      i += L;
+    }
+    bw.bits(esc, nC); bw.code(2); bw.code(0xFF);
+    return bw.finish();
+  }
+
+  // Complete type-6 resource. filtered=true stores halfword differences (header 0xE0), as the game does for maps and
+  // metatiles. The dictionary is padded to a multiple of 4 because the IWRAM decoder fetches the bitstream with word
+  // loads (verified against the game's own decoder through the emulator oracle).
+  function encodeType6(raw, filtered, nCs) {
+    if (filtered && raw.length % 2) throw new Error("Diff16 needs an even length");
+    const payload = filtered ? filter16(raw) : raw;
+    const runs = new Map();
+    for (let i = 0; i < payload.length;) { let j = i; while (j < payload.length && payload[j] === payload[i]) j++; if (j - i >= 2) runs.set(payload[i], (runs.get(payload[i]) || 0) + 1); i = j; }
+    let table = [...runs.entries()].filter(([, c]) => c >= 2).sort((a, b) => b[1] - a[1]).slice(0, 28).map(([b]) => b);
+    while (table.length % 4) table.push(table.length ? table[0] : 0);
+    let best = null;
+    for (const nC of nCs || [0, 1, 2, 3]) {
+      const hist = new Int32Array(1 << nC); for (const b of payload) hist[b >> (8 - nC)]++;
+      let esc = 0; if (nC) { for (let v = 1; v < hist.length; v++) if (hist[v] < hist[esc]) esc = v; }
+      const stream = encodeType6Stream(payload, nC, esc, table);
+      if (!best || stream.length < best.stream.length) best = { stream, nC, esc };
+    }
+    const out = new Uint8Array(8 + table.length + best.stream.length);
+    const hdr = ((0x60 | (filtered ? 0x80 : 0)) | (raw.length << 8)) >>> 0;
+    out[0] = hdr & 0xFF; out[1] = (hdr >>> 8) & 0xFF; out[2] = (hdr >>> 16) & 0xFF; out[3] = hdr >>> 24;
+    out[4] = table.length; out[5] = best.esc; out[6] = 0; out[7] = best.nC;
+    out.set(table, 8); out.set(best.stream, 8 + table.length);
+    return out;
+  }
+
+  // Smallest blob the loader accepts for `raw`: type 6 (filtered when even), LZ77 (+Diff16, header 0x90, which the
+  // game itself ships) or plain LZ77. Every candidate is decoded back before it is allowed to win.
+  function encodeBest(raw, allowFilter) {
+    const even = raw.length % 2 === 0, cands = [];
+    const tryAdd = (fn) => { try { const b = fn(); if (bytesEqual(decode(b, 0), raw)) cands.push(b); } catch (e) { /* skip */ } };
+    if (allowFilter && even) tryAdd(() => encodeType6(raw, true));
+    tryAdd(() => encodeType6(raw, false));
+    if (allowFilter && even) tryAdd(() => { const b = lz77Encode(filter16(raw)); b[0] = 0x90; return b; });
+    tryAdd(() => lz77Encode(raw));
+    if (!cands.length) throw new Error("no encoder produced a valid blob");
+    return cands.reduce((a, b) => (b.length < a.length ? b : a));
+  }
+  function bytesEqual(a, b) { if (a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; }
+
   // ------------------------------------------------------------------ write-back
   function freeSpaceStart(rom) {
     let last = rom.length - 1;
@@ -297,34 +419,73 @@
     return (last + 1 + 0x10 + 3) & ~3;
   }
 
-  // Both blobs are `4-byte header, u16 cells`. Write the cells into a copy of the original decoded bytes so the declared
-  // size and any trailing padding stay exactly as the game shipped them.
+  // Both maps and the collision map are `4-byte header, u16 cells`. Write the cells into a copy of the original decoded
+  // bytes so the declared size and any trailing padding stay exactly as the game shipped them.
   function serializeCells(raw, cells) {
     const out = new Uint8Array(raw);
     for (let i = 0; i < cells.length; i++) { out[4 + i * 2] = cells[i] & 0xFF; out[5 + i * 2] = cells[i] >> 8; }
     return out;
   }
+  // Metatile blob: 8-byte header, count x 16 u16 tile refs, then count x 16 attribute bytes (structure of arrays).
+  function serializeMetatiles(metaRaw, n, refs, attrs) {
+    const out = new Uint8Array(metaRaw);
+    for (let i = 0; i < n * 16; i++) { out[4 + i * 2] = refs[i] & 0xFF; out[5 + i * 2] = refs[i] >> 8; }
+    out.set(attrs.subarray(0, n * 16), 4 + n * 32);
+    return out;
+  }
 
-  // edits: array of {rec, layers: [cells|null x3], collision: cells|null}. Returns {rom, log, used, free}.
+  // Free-space allocator: the zero tail of the ROM plus the bytes of every blob a redirected pointer abandons (each
+  // district blob is referenced exactly once, so a replaced blob is dead). Best fit, 4-byte aligned.
+  class Allocator {
+    constructor(rom) { this.regions = [{ start: freeSpaceStart(rom), end: rom.length }]; this.tailStart = this.regions[0].start; }
+    free(start, len) {
+      start = (start + 3) & ~3; const end = start + len;
+      if (end - start < 8) return;
+      this.regions.push({ start, end });
+      this.regions.sort((a, b) => a.start - b.start);
+      const merged = [];
+      for (const r of this.regions) { const last = merged[merged.length - 1]; if (last && r.start <= last.end) last.end = Math.max(last.end, r.end); else merged.push({ ...r }); }
+      this.regions = merged;
+    }
+    alloc(len) {
+      let best = null;
+      for (const r of this.regions) { const size = r.end - r.start; if (size >= len && (!best || size < best.end - best.start)) best = r; }
+      if (!best) return -1;
+      const addr = best.start; best.start = (addr + len + 3) & ~3;
+      if (best.end - best.start < 8) this.regions.splice(this.regions.indexOf(best), 1);
+      return addr;
+    }
+    tailUsed(rom) { const tail = this.regions.find((r) => r.end === rom.length); return rom.length - (tail ? tail.start : rom.length) === 0 ? rom.length - this.tailStart : (tail.start - this.tailStart); }
+  }
+
+  // edits: [{rec, layers: [cells|null x3], collision: cells|null, metas: [{refs, attrs}|null x3]}]
+  // Returns {rom, log, tailUsed, tailFree}.
   function applyEdits(rom, edits) {
-    const out = new Uint8Array(rom); let cursor = freeSpaceStart(rom); const log = [];
-    const place = (blob, rec, field, label) => {
-      if (cursor + blob.length > out.length) throw new Error("out of free space (" + label + ")");
-      out.set(blob, cursor);
-      const off = rec + field, old = u32(out, off), addr = ROM_BASE + cursor;
-      out[off] = addr & 0xFF; out[off + 1] = (addr >>> 8) & 0xFF; out[off + 2] = (addr >>> 16) & 0xFF; out[off + 3] = addr >>> 24;
-      log.push({ rec, label, old, addr, size: blob.length });
-      cursor = (cursor + blob.length + 3) & ~3;
-    };
+    const out = new Uint8Array(rom); const alloc = new Allocator(rom); const log = [];
+    const jobs = [];
     for (const e of edits) {
       const level = loadLevel(rom, e.rec);
       for (let L = 0; L < 3; L++) {
-        if (!e.layers[L] || !level.layers[L]) continue;
-        place(lz77Encode(serializeCells(level.layers[L].raw, e.layers[L])), e.rec, F_LAYERS[L], "layer" + L);
+        const lay = level.layers[L]; if (!lay) continue;
+        if (e.layers && e.layers[L]) jobs.push({ rec: e.rec, field: F_LAYERS[L], label: "layer" + L, blob: encodeBest(serializeCells(lay.raw, e.layers[L]), true) });
+        if (e.metas && e.metas[L]) jobs.push({ rec: e.rec, field: F_LAYERS[L] + 4, label: "metatiles" + L, blob: encodeBest(serializeMetatiles(lay.metaRaw, lay.n, e.metas[L].refs, e.metas[L].attrs), true) });
       }
-      if (e.collision && level.collision) place(lz77Encode(serializeCells(level.collision.raw, e.collision)), e.rec, F_COLL_MAP, "collision");
+      if (e.collision && level.collision) jobs.push({ rec: e.rec, field: F_COLL_MAP, label: "collision", blob: encodeBest(serializeCells(level.collision.raw, e.collision), true) });
     }
-    return { rom: out, log, used: cursor - freeSpaceStart(rom), free: out.length - cursor };
+    // release every replaced blob first, then place (a blob may land in its own old slot when it fits)
+    for (const j of jobs) { j.old = u32(out, j.rec + j.field); const off = j.old - ROM_BASE; try { alloc.free(off, blobExtent(rom, off)); } catch (err) { /* unknown extent: do not reclaim */ } }
+    jobs.sort((a, b) => b.blob.length - a.blob.length); // largest first: best fit then wastes the least
+    for (const j of jobs) {
+      const addr = alloc.alloc(j.blob.length);
+      if (addr < 0) throw new Error("out of free space while placing " + j.label + " (" + j.blob.length + " bytes)");
+      out.set(j.blob, addr);
+      const off = j.rec + j.field, a = ROM_BASE + addr;
+      out[off] = a & 0xFF; out[off + 1] = (a >>> 8) & 0xFF; out[off + 2] = (a >>> 16) & 0xFF; out[off + 3] = a >>> 24;
+      log.push({ rec: j.rec, label: j.label, old: j.old, addr: a, size: j.blob.length, inPlace: addr < alloc.tailStart });
+    }
+    const tail = alloc.regions.find((r) => r.end === out.length);
+    const tailUsed = (tail ? tail.start : out.length) - alloc.tailStart;
+    return { rom: out, log, tailUsed, tailFree: out.length - alloc.tailStart - tailUsed };
   }
 
   function romInfo(rom) {
@@ -333,6 +494,7 @@
   }
 
   return { ROM_BASE, F_LAYERS, F_COLL_META, F_COLL_MAP, F_OBJECTS, F_BANK, F_PALETTE, KNOWN_SHA1, u16, u32, ptr,
-           decodeType6, lz77Decode, unfilter16, decode, records, decodePalette, loadLevel, paintMetatile, collisionClass,
-           lz77Encode, crc32, upsMake, upsApply, freeSpaceStart, serializeCells, applyEdits, romInfo };
+           decodeType6, lz77Decode, rleDecode, unfilter16, decode, records, decodePalette, loadLevel, paintMetatile, collisionClass,
+           lz77Encode, filter16, encodeType6, encodeBest, blobExtent, Allocator, crc32, upsMake, upsApply, freeSpaceStart,
+           serializeCells, serializeMetatiles, applyEdits, romInfo };
 });

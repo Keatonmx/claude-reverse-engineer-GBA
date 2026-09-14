@@ -25,7 +25,7 @@ The HLE BIOS is fine for driving and dumping; use a real BIOS dump only if you m
 | Tool | Purpose |
 |---|---|
 | `harness rom script outprefix` | Runs a script of `<frame> keys <mask>` / `shot name` / `dump name` (EWRAM, IWRAM, palette, VRAM, OAM) / `regs name` (true I/O state) / `save name` / `load name`. Key mask bits: A=1 B=2 Select=4 Start=8 Right=16 Left=32 Up=64 Down=128 R=256 L=512. `topng.py` converts `.rgba` screenshots. |
-| `trace rom state frames keymask log [lo:hi ...] [b<hex> ...]` | Loads a state, sets write watchpoints on address ranges and/or execution breakpoints, runs with a key mask held and logs frame, address, value, access source (CPU or DMA), PC, r0-r7, lr, sp and `[sp]`, `[sp+4]` on every hit. |
+| `trace rom state frames keymask log [lo:hi ...] [rlo:hi ...] [b<hex> ...]` | Loads a state, sets write (`lo:hi`) or read (`rlo:hi`) watchpoints on address ranges and/or execution breakpoints, runs with a key mask held and logs frame, address, value, access source (CPU or DMA), PC, r0-r7, lr, sp and `[sp]`, `[sp+4]` on every hit. |
 | `oracle rom state outdir loader ret dst blob...` | Hijacks the paused CPU to call a game routine (r0 = source, r1 = destination) and writes back r0 bytes from `dst`. Used to run the game's decompressor on arbitrary ROM blobs. |
 
 A full run of a few thousand frames takes well under a second, so iterate freely.

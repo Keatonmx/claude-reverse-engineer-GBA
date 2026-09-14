@@ -1,5 +1,6 @@
 // Watchpoint tracer over libmgba: load a save state, set write watchpoints, run N frames with keys held, log every hit.
-// usage: trace rom state.bin frames keymask logfile lo:hi [lo:hi ...]
+// usage: trace rom state.bin frames keymask logfile lo:hi [lo:hi ...] [rlo:hi ...] [b<hexaddr> ...]
+//   lo:hi = write watchpoint, rlo:hi = read watchpoint, b<addr> = breakpoint
 #include <mgba/core/core.h>
 #include <mgba/core/config.h>
 #include <mgba/debugger/debugger.h>
@@ -68,11 +69,12 @@ int main(int argc, char** argv) {
 			fprintf(stderr, "breakpoint %08X id %zd\n", bp.address, id);
 			continue;
 		}
-		if (sscanf(argv[i], "%x:%x", &lo, &hi) != 2) continue;
+		int rd = argv[i][0] == 'r';
+		if (sscanf(argv[i] + rd, "%x:%x", &lo, &hi) != 2) continue;
 		struct mWatchpoint wp; memset(&wp, 0, sizeof wp);
-		wp.segment = -1; wp.minAddress = lo; wp.maxAddress = hi; wp.type = WATCHPOINT_WRITE;
+		wp.segment = -1; wp.minAddress = lo; wp.maxAddress = hi; wp.type = rd ? WATCHPOINT_READ : WATCHPOINT_WRITE;
 		ssize_t id = dbg.platform->setWatchpoint(dbg.platform, &mod.d, &wp);
-		fprintf(stderr, "watchpoint %08X-%08X id %zd\n", lo, hi, id);
+		fprintf(stderr, "%s watchpoint %08X-%08X id %zd\n", rd ? "read" : "write", lo, hi, id);
 	}
 	dbg.state = DEBUGGER_RUNNING;
 	for (curFrame = 0; curFrame < frames; ++curFrame) {

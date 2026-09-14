@@ -15,7 +15,7 @@ Built against libmgba (static) so the game can be driven and inspected without a
 * `harness rom script outprefix` — scripted input (`<frame> keys <mask>`), screenshots (`shot`), memory dumps (`dump`:
   EWRAM/IWRAM/PAL/VRAM/OAM), I/O registers (`regs`), save/load states. `probe10.txt` is the route from the
   Create-a-Bod confirmation to the first district (state `s2` → `district`). `topng.py` converts `.rgba` screenshots.
-* `trace rom state frames keymask log [lo:hi ...] [b<hex> ...]` — loads a state, sets write watchpoints and/or
+* `trace rom state frames keymask log [lo:hi ...] [rlo:hi ...] [b<hex> ...]` — loads a state, sets write (`lo:hi`) or read (`rlo:hi`) watchpoints and/or
   breakpoints, runs with keys held, logs registers on every hit. This is what resolved the tile-cache routine
   (`b0804FDA2`) and the VRAM fills (`06000000:06007fff`).
 * `oracle rom state outdir blob...` — calls the game's own resource loader (0x0801EC00) on any ROM blob from inside a

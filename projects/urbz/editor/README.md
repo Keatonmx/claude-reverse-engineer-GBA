@@ -3,9 +3,14 @@
 A browser page that edits the districts of *The Urbz: Sims in the City* (GBA) and exports the result as a UPS patch.
 Open `index.html` in any modern browser (no server, no build step, nothing leaves your machine) and load your own dump.
 
+- **Districts.** All 71 entries of the game's district table (index 62 is the first playable rooftop).
 - **Layers.** Each district has up to three visual layers (ground = BG2, middle = BG1, top = BG0) made of 32x32-pixel
-  metatiles, plus a collision layer of 4x4 cells per metatile. Pick a layer or Collision in *Edit*, click a piece in the
-  panel on the right, then click or drag on the map. Right-click a map cell to pick up whatever is there.
+  pieces (metatiles), plus a collision layer of 4x4 cells per piece. Pick a layer or Collision in *Edit*, click a piece
+  in the *Pieces* panel, then click or drag on the map. Right-click a map cell to pick up whatever is there. Pieces
+  marked with an orange dot are not used anywhere in the district and are safe to redefine.
+- **Piece editor.** The second tab shows the selected piece as a 4x4 grid of 8x8 tiles. Click a slot, then click a tile
+  in the district's tile bank (or type its number), with palette bank and H/V flip. Every cell using that piece
+  updates at once. The piece count is fixed (the game allocates RAM for it), so redefine unused pieces to add new art.
 - **Collision colours.** Red blocks the Sim (byte `0x03`), green is pavement the Sim walks on (`0x40`, `0x43`), blue marks
   special edge/step values, unpainted is open (`0x00`). These meanings were confirmed by a scripted walk test in mGBA.
 - **Undo/redo** with the buttons or Ctrl+Z / Ctrl+Y. Strokes across several districts are one history.
@@ -17,14 +22,19 @@ Open `index.html` in any modern browser (no server, no build step, nothing leave
 
 ## How it writes back
 
-The game's loader dispatches on a header type nibble and its type 1 branch is BIOS LZ77, so edited maps are stored as
-plain LZ77 blobs in the ROM's zero-filled tail (about 32 KB) and the district record pointers are redirected. No custom
-encoder, no code patch. Metatile definitions and tile graphics are not editable yet, only which piece goes where and the
-collision grid. The free-space counter in the footer shows how much of the tail is used.
+Edited blobs are re-encoded in the game's own compression (a type-6 encoder that the game's decoder was shown to accept
+byte-exactly, with the Diff16 pre-filter the game uses for maps and pieces) or, when smaller, as BIOS LZ77 with or
+without the filter flag; each candidate is decoded back before it may win. Because every district blob is referenced
+exactly once, the bytes of a replaced blob are reclaimed and edits are placed best-fit, largest first, into those slots;
+the ROM's 32 KB zero tail is the fallback. The footer shows how many blobs landed in reclaimed slots and how much of the
+tail is used. Only which pieces go where, the collision grid and the piece definitions change; the 8x8 tile art and the
+palettes are read-only for now.
 
 ## Files
 
-- `urbz-core.js` — decoding (type 6 + Diff16, LZ77, raw), record scan, level model, metatile painter, LZ77 encoder, UPS
-  make/apply, write-back. Also loads in Node; it is tested against the Python tools in `..` (same UPS byte for byte, same
-  pixels as `urbz_level.py render`).
+- `urbz-core.js` — decoding (type 6 + Diff16, LZ77 incl. the `0x90` filtered header, RLE, raw), the district table,
+  level model, piece painter, type-6 and LZ77 encoders, blob extents, the reclaiming allocator, UPS make/apply. Also
+  loads in Node.
 - `index.html` — the UI. `window.__editorApi` is a small hook used by the headless browser test.
+- `test/core_test.js rom.gba` — round-trips all 480 type-6 district blobs through the encoders and checks a full edit.
+- `test/ui_test.js rom.gba [out.ups]` — drives the page in headless Chromium (needs `playwright`; set `CHROME`).

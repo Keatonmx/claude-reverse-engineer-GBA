@@ -73,14 +73,17 @@ go through a lighting stage before reaching hardware. Finding the palette source
   `0x92000` shows repeated rows of five function pointers + a flags word (`01 01 00 05`) = object/state dispatch tables.
 - **Item table** at `0x75000`: 20-byte records `{ptr → 0x149xxxx descriptor, 5 bytes of parameters (10/21/21/21/21, 50/6/6/6/6…), pad, u32 id}`
   with sequential ids `0x3D6, 0x3D7, …`.
-- **District records (verified in the emulator, see section 6)**: 80-byte records in `0x73000-0x7A000`, found by
-  signature (`urbz_level.py list`), each:
+- **District records (verified in the emulator, see section 6)**: a table of **71** 80-byte records on a fixed 0x50
+  stride from `0x73568` (the game computes `0x08073568 + index*0x50` at `0x08031BC0`; the district index lives at
+  IWRAM `0x030048F8`, 62 = the first playable district, 72 = the Create-a-Bod screen). The earlier signature scan found
+  only 33 of them because the other records store some layers as BIOS LZ77 (`0x10`), LZ77 + Diff16 (`0x90`, which the
+  game ships and the BIOS accepts) or RLE (`0x30`) instead of type 6. Each record:
 
   | Offset | Content |
   |---|---|
   | `+0x00/+0x04`, `+0x10/+0x14`, `+0x20/+0x24` | three visual layers (map, metatiles) for BG2, BG1, BG0 (BG3 is the HUD) |
   | `+0x30` / `+0x34` | collision metatiles (type 6, 16 bytes each) / collision map (`u16 count`, 3 words, u16 cells) |
-  | `+0x40` | object list (4 zero bytes, then type-6 blobs of 6-byte records such as `{2, 0, 7455}`) |
+  | `+0x40` | pointer to `u32 size_class` (0/1/2) followed by a type-6 blob: a **spatial hash map** keyed by position, not an object list (see below) |
   | `+0x44` | **tile bank**: raw (type 0) header, then 4bpp 8x8 tiles; a metatile tile reference is an index into it |
   | `+0x48` | **background palettes**: 512 raw bytes = 16 BGR555 banks, copied to palette RAM (bank 0 is overwritten by the HUD) |
 
@@ -91,6 +94,15 @@ go through a lighting stage before reaching hardware. Finding the palette source
   `0x4FCD8`: cache table indexed by `ref & 0x7FF`, full reference compared; copy at `0x4FDA2`: source = bank + ref*32) and
   draws the map at `0x4FA38` with the cell at `map[(y>>5)*width + (x>>5)]` and the tile at entry `((y>>3)&3)*4 + ((x>>3)&3)`.
   There is no isometric geometry in the format; the isometric look is in the art.
+
+  **The `+0x40` hash map.** The loader is called on the blob after the size word (`0x0803147C`); the decoded buffer is
+  `2^k` buckets of 6 bytes (`k` = 8 + size class: 256/512/1024 buckets) followed by an overflow area (125/256/512
+  entries), total 2286/4608/9216 bytes. Entry = `{u16 value, u16 next, u8 x, u8 y}`; bucket = `(251*x + 23*y) & (2^k-1)`
+  (lookup routine `0x0805320C`, insert `0x0805332C`, `value |= bits` at `0x080534CE`); `next` chains into the overflow
+  area (0 = end). Positions are in 16x16-pixel cells. The ROM ships static entries with value 2 (114 in district 62);
+  at runtime the game inserts entries with value `0x20` and `0x100` for actors. Emptying the static entries changed
+  nothing in the first frame or in the walk test, so their meaning is still open; NPC and object *placement* is not
+  in the district record at all (see section 8).
 
   **Exact verification**: with the game paused in the first district, every visible cell of BG2, BG1 and BG0 (651 of 651
   each) matches the ROM record `0x748C8` in tile index and attribute at map tile origin (11,25) with scroll (90,205), the
@@ -117,10 +129,9 @@ go through a lighting stage before reaching hardware. Finding the palette source
    pointer change. Money/skill gain constants live in the functions those tables reference.
 5. **Lighting and palette hacks** — *hours*. The remap LUT used by `0x08015E58` controls tint; patching it yields
    night/sepia/colour-blind modes without touching any asset.
-6. **District/level editor** — **done** (`editor/`, write-back in section 7). The record format is fully decoded and
-   verified against the running game, `urbz_level.py` renders any district in colour exactly as it appears on screen, and
-   `urbz_patch.py` writes edited maps and collision back as BIOS LZ77 blobs in free space with a UPS patch as output.
-   Remaining: metatile/tile graphics editing, and a type-6 encoder or free-space reclaim if the 32 KB tail runs out.
+6. **District/level editor** — **done** (`editor/`, write-back in section 7): all 71 districts, three layers, collision,
+   piece (metatile) redefinition from the tile bank, type-6 re-encoding, slot reclaim, UPS export. Remaining: editing the
+   8x8 tile art itself (the bank is raw 4bpp, so this is a pixel editor plus a size check) and object placement.
 7. **Sound replacement** — *weeks*. Custom driver, raw 8-bit PCM at `0x1100000+`; sample swaps are feasible once the
    sample table is found, music sequencing would need the driver reversed.
 
@@ -141,6 +152,23 @@ blob without a type-6 encoder: decode with `urbz_codec`, edit, `lz77_compress`, 
 (`0x1FF8240+`), and rewrite the record pointer. The Diff16 flag must stay clear (`0x90` is not a BIOS header), so the
 LZ77 payload is the unfiltered data. `urbz_patch.py` does this and emits a UPS patch (IPS offsets stop at 16 MB).
 
+**Encoder (done).** `urbz_codec.encode_type6` is an optimal-parse (dynamic programming) encoder for the game's own
+format, with the Diff16 pre-filter, so edited blobs can go back as type 6 (`0xE0`) at 101-106 % of EA's size instead of
+LZ77 at 130-270 %. Three things had to be learned from the game itself, through the emulator oracle: (1) the IWRAM
+decoder fetches the bitstream with **word loads**, so the dictionary must be padded to a multiple of 4 and blobs placed
+4-byte aligned, otherwise the decoder reads rotated words and the game jumps into garbage (Python, reading bytes, was
+happy with the misaligned stream); (2) the "literal fill byte" form (`f >= 0x20` plus 3 bits) is never used by EA's
+data and the real decoder rejects it, so only dictionary fills are emitted; (3) EA's parameter words use escape widths of
+0-2 bits (`n_c`) and 4-28-byte dictionaries, which is where most of the size difference came from. Eleven blobs in
+every configuration now come back byte-identical from the game's decoder (`0x0801EC00` via `emu/oracle`).
+`urbz_patch.encode_blob` / `UrbzCore.encodeBest` pick the smallest of type 6 (filtered or not), LZ77 + Diff16 and LZ77,
+after decoding each candidate back.
+
+**Free space (done).** Every district blob is referenced exactly once, so a redirected pointer frees its old bytes.
+`urbz_patch.Patcher` and `UrbzCore.applyEdits` reclaim them (extent from the decoder's end position) and allocate
+best-fit, largest first; the zero tail (32 KB) is only the fallback. A collision-map edit lands in its own old slot;
+metatile blobs (about 7.3 KB at EA's size) overflow their slot by a few percent and go to the tail.
+
 Proof of concept `urbz_patch.py demo`: a 2x5-metatile block at map cells (8..9, 7..11) of the first district, visual
 metatile 0 on the ground layer (`map0`, 956 B → 824 B LZ77) and collision metatile 0 (`collmap`, 954 B → 284 B).
 Verified with `emu/probe26_walltest.txt` on the original and the patched ROM:
@@ -153,7 +181,9 @@ Verified with `emu/probe26_walltest.txt` on the original and the patched ROM:
   Left for 290 frames scrolls the original from `BG2HOFS=204` to `0` (the Sim crosses the map) and leaves the patched
   run at `204` for the whole time (blocked; the walking animation plays in place). Holding Down afterwards moves the Sim in
   both, so nothing is frozen. Collision byte `0x03` therefore blocks movement; the Sim walks on `0x40`/`0x43` cells.
-- The UPS patch is 1,416 bytes and re-applies to the original dump byte-exactly (`gba_patchfile.py apply`).
+- The UPS patch is 365 bytes with the type-6 encoder (1,416 with LZ77) and re-applies to the original dump byte-exactly.
+- A metatile edit (all 16 tiles of piece 156 replaced through `UrbzCore.applyEdits`) shows up in the emulator frame at
+  exactly the expected 32x32 screen rectangle, and the RAM copy of the metatile blob equals the edited data.
 
 Collision map layout, corrected: `u16 count` (number of collision metatiles, 74 here), `u16 0`, then `width*height` u16
 metatile ids using the visual map's width and height (25x19); each collision metatile is 16 bytes = 4x4 cells of 8x8 px.
@@ -164,8 +194,11 @@ every 60 frames from 4500; the district is under player control by frame 4600 (`
 
 ## 8. Remaining leads
 
-0. **Type-6 encoder** (optional): only needed when LZ77 re-encoding of many blobs outgrows the 32 KB tail. Alternative:
-   reclaim the space of the replaced original blobs (they are no longer referenced) with a small free-list in the patcher.
+0. **Objects and NPCs.** The district record has no placement list; the `+0x40` hash map only carries static value-2
+   markers. Candidates: the per-district table at `0x08075124` (stride 16, three pointers, indexed by district; entries
+   1-4 point into `0x080B85A4+`), the `0x9A2E4` table referenced from the save module, and the `0x90000-0x92000`
+   dispatch tables. Trace: read watchpoint on the OAM shadow builder's source, or break on the sprite directory reader
+   (`0x7A000` records) after a district load and walk back to the table that supplied the index.
 1. Break on `0x0801EC00` (loader) with a save state in a district; log r0 (source) for every call → maps directory records
    to on-screen objects and finds the font. Then `watch/w 0x06000000` (charblock 0) after a district load to catch the
    tile-bank → VRAM copy: it tells which bank pages beyond the first 1024 tiles are used and when (the +0x20 table is the
@@ -176,9 +209,9 @@ every 60 frames from 4500; the district is under player control by frame 4600 (`
 
 ## Files
 
-- `urbz_codec.py` — decoders for header types 0-4 and 6 (`decode(rom, offset)`), CLI: `urbz_codec.py rom.gba 0xA054D4 out.bin`
+- `urbz_codec.py` — decoders for header types 0-4 and 6 (`decode(rom, offset)`) and the type-6 encoder (`encode_type6(raw, filtered)`, `filter16`), CLI: `urbz_codec.py rom.gba 0xA054D4 out.bin`
 - `urbz_dump.py` — directory parser and exporter (`list`, `png`, `raw`)
 - `urbz_level.py` — level record parser and layer renderer (`list`, `render --layer N --crop --origin --zoom`)
-- `editor/` — browser district editor (`index.html` + `urbz-core.js`): renders any district, paints metatiles and collision, exports UPS; JS core verified against the Python tools (identical UPS, identical pixels)
+- `editor/` — browser district editor (`index.html` + `urbz-core.js`): renders any of the 71 districts, paints pieces and collision, redefines pieces tile by tile, re-encodes with the type-6 encoder, reclaims replaced blobs, exports UPS; `test/core_test.js` and `test/ui_test.js` check it against the Python tools and in headless Chromium
 - `urbz_patch.py` — write-back: `demo` (the wall proof of concept), `replace rom out record field raw.bin`, `--ups out.ups`, `ups-apply`
 - `emu/probe26_walltest.txt` — harness script: power-on state → district → through the dialogue → walk Left and Down with register dumps

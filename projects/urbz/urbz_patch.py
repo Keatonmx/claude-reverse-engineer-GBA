@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Write edited district data back into an Urbz ROM.
 
-The loader at 0x0801EC00 dispatches on the header type nibble, and type 1 is BIOS LZ77 with the resource header itself
-passed to swi 0x11 (byte 0 = 0x10, bytes 1-3 = size: the BIOS header). So any blob the game stores as its custom type 6
-can be replaced by a plain LZ77 blob without writing a type-6 encoder: decode, edit, `lz77_compress`, drop the result in
-free space, point the record at it. The Diff16 filter flag (bit 7) must be clear on a type-1 blob (0x90 is not a valid
-BIOS header), so the LZ77 payload is the *unfiltered* data.
+Edited blobs are re-encoded with the smallest format the loader accepts (our type-6 encoder, verified byte-exact
+against the game's own decoder, or LZ77 with or without the Diff16 flag) and placed best-fit in the free space: the
+ROM's zero tail plus the bytes of the blobs the redirected pointers abandon, so most edits land in the original slot.
 
     python3 urbz_patch.py demo rom.gba out.gba [record] [--ups out.ups]
         The proof of concept: a 2x5-metatile wall to the right of the start position in the first district
@@ -15,8 +13,7 @@ BIOS header), so the LZ77 payload is the *unfiltered* data.
         meta2 collmeta collmap objects.
     python3 urbz_patch.py ups-apply rom.gba patch.ups out.gba
 
-Free space is the zero-filled tail of the ROM (0x1FF823D-0x1FFFFFF on the BOCE dump); blobs are packed there 4-byte
-aligned. Output ROMs are for your own testing; ship the .ups.
+Output ROMs are for your own testing; ship the .ups.
 """
 import os
 import struct
@@ -26,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "..", "..", ".claude", "skills", "gba-reverse-engineering", "scripts"))
 import urbz_codec as uc  # noqa: E402
-from gba_compress import lz77_compress, lz77_decompress  # noqa: E402
+from gba_compress import lz77_compress, lz77_decompress_ex, rle_decompress_ex  # noqa: E402
 from gba_patchfile import ups_make, ups_apply  # noqa: E402
 
 FIELDS = {"map0": 0x00, "meta0": 0x04, "map1": 0x10, "meta1": 0x14, "map2": 0x20, "meta2": 0x24,
@@ -39,30 +36,77 @@ def decoded(rom, off):
     return bytes(d[0] if isinstance(d, tuple) else d)
 
 
-def encode_blob(raw):
-    """Resource blob the loader accepts as type 1: BIOS LZ77 header + stream. Round-trip checked."""
-    blob = lz77_compress(bytes(raw), vram_safe=True)
-    assert blob[0] == 0x10 and lz77_decompress(blob) == bytes(raw)
-    return blob
+def blob_extent(rom, off):
+    """Bytes a resource occupies in the ROM (header to end of stream, rounded to 4)."""
+    t = (rom[off] >> 4) & 7
+    size = struct.unpack_from("<I", rom, off)[0] >> 8
+    if t == 0:
+        end = off + 4 + size
+    elif t == 6:
+        end = uc.type6_end(rom, off)
+    elif t in (1, 3):
+        buf = bytes([t << 4]) + bytes(rom[off + 1:off + 4 + size * 2 + 256])
+        end = off + (lz77_decompress_ex(buf, 0)[1] if t == 1 else rle_decompress_ex(buf, 0)[1])
+    else:
+        raise ValueError("unknown blob type %d" % t)
+    return ((end + 3) & ~3) - off
+
+
+def encode_blob(raw, allow_filter=True):
+    """Smallest resource blob the loader accepts for `raw`: our type 6 (Diff16-filtered when even), LZ77 + Diff16
+    (header 0x90, which the game itself ships), or plain LZ77. Every candidate is decoded back before it may win."""
+    cands = []
+    even = len(raw) % 2 == 0
+    if allow_filter and even:
+        cands.append(uc.encode_type6(raw, True))
+        lz = bytearray(lz77_compress(uc.filter16(bytes(raw)), vram_safe=True))
+        lz[0] = 0x90
+        cands.append(bytes(lz))
+    cands.append(uc.encode_type6(raw, False))
+    cands.append(lz77_compress(bytes(raw), vram_safe=True))
+    ok = [c for c in cands if uc.decode(c, 0)[0] == bytes(raw)]
+    assert ok, "no encoder produced a valid blob"
+    return min(ok, key=len)
 
 
 class Patcher:
+    """Redirects district record pointers to re-encoded blobs. Free space = the ROM's zero tail plus the bytes of
+    every blob a redirected pointer abandons (district blobs are referenced exactly once). Best-fit, 4-byte aligned."""
+
     def __init__(self, rom):
         self.orig = bytes(rom)
         self.rom = bytearray(rom)
-        end = len(rom)
-        last = end - 1
+        last = len(rom) - 1
         while last > 0 and rom[last] == 0:
             last -= 1
-        self.cursor = (last + 1 + 0x10 + 3) & ~3  # leave a small gap after the last used byte
+        self.tail_start = (last + 1 + 0x10 + 3) & ~3
+        self.regions = [[self.tail_start, len(rom)]]
         self.log = []
 
+    def free(self, start, length):
+        start = (start + 3) & ~3
+        if length < 8:
+            return
+        self.regions.append([start, start + length])
+        self.regions.sort()
+        merged = []
+        for r in self.regions:
+            if merged and r[0] <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], r[1])
+            else:
+                merged.append(list(r))
+        self.regions = merged
+
     def place(self, blob):
-        addr = self.cursor
-        if addr + len(blob) > len(self.rom):
-            raise SystemExit("out of free space: need %d bytes at 0x%X" % (len(blob), addr))
+        fit = [r for r in self.regions if r[1] - r[0] >= len(blob)]
+        if not fit:
+            raise SystemExit("out of free space: need %d bytes" % len(blob))
+        r = min(fit, key=lambda r: r[1] - r[0])
+        addr = r[0]
         self.rom[addr:addr + len(blob)] = blob
-        self.cursor = (addr + len(blob) + 3) & ~3
+        r[0] = (addr + len(blob) + 3) & ~3
+        if r[1] - r[0] < 8:
+            self.regions.remove(r)
         return addr
 
     def set_ptr(self, off, file_addr):
@@ -71,11 +115,19 @@ class Patcher:
     def replace(self, rec, field, raw):
         off = rec + FIELDS[field]
         old = struct.unpack_from("<I", self.rom, off)[0]
-        blob = encode_blob(raw)
+        try:
+            self.free(old - 0x08000000, blob_extent(self.orig, old - 0x08000000))
+        except Exception:
+            pass  # unknown extent: leave the old bytes alone
+        blob = encode_blob(raw, allow_filter=field != "objects")
         addr = self.place(blob)
         self.set_ptr(off, addr)
-        self.log.append((rec, field, old, addr, len(raw), len(blob)))
+        self.log.append((rec, field, old, addr, len(raw), len(blob), addr < self.tail_start))
         return addr
+
+    def tail_used(self):
+        tail = [r for r in self.regions if r[1] == len(self.rom)]
+        return (tail[0][0] if tail else len(self.rom)) - self.tail_start
 
     def ups(self):
         """UPS patch (IPS offsets are 24-bit and cannot reach the free space past 16 MB)."""
@@ -125,9 +177,10 @@ def main():
     else:
         raise SystemExit("unknown command " + cmd)
     open(a[2], "wb").write(pt.rom)
-    for rec, field, old, addr, n, nb in pt.log:
-        print("record 0x%X %-8s 0x%08X -> 0x%08X (%d bytes raw, %d bytes LZ77)" % (rec, field, old, 0x08000000 + addr, n, nb))
-    print("written", a[2])
+    for rec, field, old, addr, n, nb, inplace in pt.log:
+        print("record 0x%X %-8s 0x%08X -> 0x%08X (%d bytes raw, %d bytes encoded, type 0x%02X, %s)"
+              % (rec, field, old, 0x08000000 + addr, n, nb, pt.rom[addr], "reclaimed slot" if inplace else "tail"))
+    print("written %s; %d bytes of the tail used" % (a[2], pt.tail_used()))
     if ups_out:
         p = pt.ups()
         open(ups_out, "wb").write(p)

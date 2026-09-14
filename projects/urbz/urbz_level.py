@@ -29,7 +29,7 @@ import urbz_codec as uc
 import render_tiles as rt
 
 ROM_BASE = 0x08000000
-FIRST_RECORD = 0x735C0
+FIRST_RECORD = 0x73568
 STRIDE = 0x50
 F_LAYERS = (0x00, 0x10, 0x20)
 F_COLL_META, F_COLL_MAP, F_OBJECTS, F_BANK, F_PALETTE = 0x30, 0x34, 0x40, 0x44, 0x48
@@ -41,24 +41,17 @@ def ptr(rom, off):
 
 
 def records(rom):
-    """Scan the table region for the record signature (records are 80 bytes but not on one fixed grid)."""
+    """The district table: 80-byte records on a fixed 0x50 stride from 0x73568 (the game computes
+    0x08073568 + index*0x50 at 0x08031BC0). Entries are valid while the layer-1 pointer and a raw tile bank exist."""
     out = []
-    off = 0x73000
-    while off + STRIDE <= 0x7A000:
-        ok = True
-        for i, base in enumerate(F_LAYERS):
-            a, b = ptr(rom, off + base), ptr(rom, off + base + 4)
-            if a is None or b is None:
-                if i == 0 or struct.unpack_from("<I", rom, off + base)[0] != 0:
-                    ok = False; break
-                continue
-            if ((rom[a] >> 4) & 7) != 6 or ((rom[b] >> 4) & 7) != 6:
-                ok = False; break
-        bank, pal = ptr(rom, off + F_BANK), ptr(rom, off + F_PALETTE)
-        if ok and bank is not None and pal is not None and (rom[bank] >> 4) == 0:
-            out.append(off); off += STRIDE
-        else:
-            off += 4
+    i = 0
+    while True:
+        off = FIRST_RECORD + i * STRIDE
+        m, bank = ptr(rom, off), ptr(rom, off + F_BANK)
+        if m is None or bank is None or (rom[bank] >> 4) != 0 or ptr(rom, off + 4) is None:
+            break
+        out.append(off)
+        i += 1
     return out
 
 

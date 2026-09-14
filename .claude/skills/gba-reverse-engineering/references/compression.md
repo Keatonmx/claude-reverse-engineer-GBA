@@ -98,3 +98,24 @@ otherwise it overwrites whatever follows (in Klonoa the next level's tilemap, wh
 pattern is: write the new blob into free space (`gba_rom.py freespace`), then redirect the pointer that referenced the
 original (`gba_rom.py pointers`), or, when the address is computed in code rather than read from a table, hook the
 loader (see `patching.md`). Keep the original untouched so you can always fall back.
+
+
+## Custom formats: translating a decoder and writing an encoder
+
+Licensed titles often ship their own compressor next to the BIOS ones (a header type nibble selects it). The route that
+worked on The Urbz (`urbz-case-study.md`):
+
+1. Find the decoder from the loader's dispatch table; if it runs from IWRAM, find the boot-time copy loop to know which
+   ROM bytes it is. Translate it line by line into Python, keeping register names.
+2. Prove the translation with the emulator oracle (`headless-emulation.md`): call the game's routine on the same blob
+   and compare bytes. "Decodes to the declared size" is not proof.
+3. Before writing an encoder, run the translated decoder over every shipped blob and count which branches execute and
+   the maximum values of each field. Branches that never run are unverified; avoid emitting them.
+4. Encoder: optimal parse (dynamic programming over token costs) beats greedy by 5-10 % and gets within a few percent
+   of the original tool; search the format's parameters (escape width, dictionary) the way the original encoder did,
+   which you can read off the shipped headers.
+5. Verify every encoder variant through the oracle. Expect alignment rules a byte-oriented decoder never notices: ARM
+   code fetching a bitstream with `ldr` needs the stream word-aligned, so pad variable-length headers to 4 bytes and
+   place blobs aligned.
+6. Prefer the game's own format only when it wins: a BIOS format the same dispatcher accepts (possibly with the game's
+   post-filter flag, e.g. LZ77 + Diff16) is a valid, encoder-free alternative for small assets.

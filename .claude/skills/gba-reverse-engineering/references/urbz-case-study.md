@@ -160,6 +160,24 @@ first district. Three independent confirmations, in increasing strength:
    to `0` while the patched run stays at `204` (the Sim walks in place against the block); holding Down afterwards moves
    both. That also settles the collision semantics: byte `0x03` blocks, the Sim walks on `0x40`/`0x43`.
 
+**Writing the encoder afterwards.** Once edits grew to metatile blobs (17 KB decoded), LZ77 no longer fit and a real
+type-6 encoder was written: an optimal parse over the token costs (dynamic programming), a dictionary of run bytes,
+and a search over the escape-width parameter. Three facts came only from the game's own decoder, through the oracle:
+the IWRAM decoder loads the bitstream as 32-bit words, so the dictionary must be padded to a multiple of 4 and the blob
+placed word-aligned (a byte-oriented Python decoder happily reads the misaligned stream, so the round-trip test passed
+while the game crashed); one branch of the translated decoder (the non-dictionary fill byte) is never exercised by
+shipped data and is wrong in the translation, so the encoder avoids it; and EA's parameter choices (0-2 escape bits,
+small dictionaries) account for most of the size gap. Token-path statistics over the shipped blobs (which branches ever
+run, maximum values) told which parts of the translation were verified by data and which were not. The final encoder is
+within 1-6 % of EA's output and every variant decodes byte-identically in the game.
+
+**"Object list" that is a hash map.** The record field that looked like an object list decodes to 6-byte entries
+`{u16 value, u16 next, u8 x, u8 y}`. Read watchpoints on the decoded buffer led to a lookup routine computing
+`(251*x + 23*y) & (buckets-1)` and following `next` into an overflow area: a spatial hash keyed by position, sized by
+the header word (256/512/1024 buckets). The ROM entries are static markers; the game inserts actors at runtime. The
+tell-tale signs were a fixed set of three total sizes independent of map size, mostly-zero rows, and a `next` field of
+small integers.
+
 The behavioural test cost more than the patch: the district opens with a scripted dialogue whose long boxes scroll line
 by line with the D-pad and only close on A once fully shown. Every input cadence that ignored this looked like "the game
 hung". Record the exact route through such dialogues once and keep the script with the project.
@@ -180,6 +198,9 @@ hung". Record the exact route through such dialogues once and keep the script wi
 | Free space | `0x1FF823D-0x1FFFFFF` (32,195 bytes) | `gba_rom.py freespace` |
 | Write-back | type-6 blob → BIOS LZ77 blob (type nibble 1, no filter flag) in the tail, pointer redirected, UPS patch | RAM copies, frame diff and blocked movement in the emulator |
 | Collision | map `u16 count, u16 0, w*h u16 ids`; metatile 16 bytes = 4x4 cells of 8 px; `0x03` blocks, `0x40`/`0x43` walkable | wall test |
+| District table | 71 records, `0x73568 + index*0x50`; index at IWRAM `0x030048F8` | code at `0x08031BC0`; all 71 decode |
+| `+0x40` field | size word + spatial hash map `{value, next, x, y}`, bucket `(251x+23y) & mask` | read watchpoints → `0x0805320C` |
+| Type-6 encoder | optimal parse, Diff16, word-aligned dictionary, dictionary fills only; 101-106 % of EA's size | 11 variants byte-identical through the game's decoder |
 | Open | text/font encoding (no ASCII in the ROM), object placement list semantics, save layout; a type-6 encoder only if the tail free space runs out | — |
 
 ## What generalises
@@ -194,6 +215,10 @@ hung". Record the exact route through such dialogues once and keep the script wi
 - Signature scans beat stride guesses when records are not in a table.
 - Verify against the running game before trusting any renderer, and identify what is loaded by its least-shared data.
 - A type-dispatching loader is a free write-back path: store edits in the BIOS format it already accepts.
+- An encoder for a custom format is proven only by the game's decoder: a byte-oriented re-implementation hides
+  alignment rules and never-exercised branches. Collect token-path statistics over shipped data to see which branches
+  the translation has actually verified.
+- A record field that decodes to sparse fixed-size rows with a small integer link field is a hash map, not a list.
 - Prove a patch three ways (RAM copy, frame, behaviour) with the control ROM run through the identical input script.
 - An editor is a port of the verified decoders and the write-back into one browser page (klo-gba.js pattern): keep the
   logic in a module that also loads in Node, and test it against the Python tools (same patch bytes, same pixels) and

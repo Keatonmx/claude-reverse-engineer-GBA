@@ -10,28 +10,32 @@
   body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.4 system-ui, sans-serif; height:100vh; display:grid; grid-template-rows:auto 1fr auto; }
   header { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; padding:8px 12px; background:var(--panel); border-bottom:1px solid var(--line); }
   header h1 { font-size:15px; margin:0 8px 0 0; font-weight:600; }
-  header label { display:inline-flex; gap:6px; align-items:center; color:var(--dim); }
+  label { display:inline-flex; gap:6px; align-items:center; color:var(--dim); }
   select, button, input[type=number] { background:#2f333c; color:var(--fg); border:1px solid var(--line); border-radius:4px; padding:4px 8px; font:inherit; }
+  input[type=number] { width:70px; }
   button:hover { border-color:var(--acc); cursor:pointer; }
   button:disabled { opacity:.45; cursor:default; }
   button.primary { background:#2b5d7d; }
   input[type=file] { color:var(--dim); max-width:220px; }
-  main { display:grid; grid-template-columns:1fr 300px; min-height:0; }
+  main { display:grid; grid-template-columns:1fr 340px; min-height:0; }
   #mapwrap { overflow:auto; position:relative; background:#111; }
   #map { display:block; image-rendering:pixelated; cursor:crosshair; }
   aside { border-left:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-height:0; }
-  aside .tabs { display:flex; border-bottom:1px solid var(--line); }
-  aside .tabs button { flex:1; border:0; border-radius:0; background:transparent; padding:8px; color:var(--dim); }
-  aside .tabs button.on { color:var(--fg); box-shadow:inset 0 -2px var(--acc); }
-  #pickwrap { overflow:auto; flex:1; padding:6px; }
-  #picker { display:block; image-rendering:pixelated; cursor:pointer; }
-  #sel { padding:6px 10px; border-top:1px solid var(--line); color:var(--dim); min-height:44px; }
+  .tabs { display:flex; border-bottom:1px solid var(--line); }
+  .tabs button { flex:1; border:0; border-radius:0; background:transparent; padding:8px; color:var(--dim); }
+  .tabs button.on { color:var(--fg); box-shadow:inset 0 -2px var(--acc); }
+  .pane { display:none; flex:1; min-height:0; flex-direction:column; }
+  .pane.on { display:flex; }
+  #pickwrap, #bankwrap { overflow:auto; flex:1; padding:6px; }
+  #picker, #bank, #piece { display:block; image-rendering:pixelated; cursor:pointer; }
+  #sel, #pieceinfo { padding:6px 10px; border-top:1px solid var(--line); color:var(--dim); min-height:44px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px 12px; align-items:center; padding:6px 10px; border-bottom:1px solid var(--line); }
   footer { display:flex; gap:16px; padding:6px 12px; background:var(--panel); border-top:1px solid var(--line); color:var(--dim); flex-wrap:wrap; }
-  footer .warn { color:var(--warn); } footer .ok { color:var(--ok); }
+  .warn { color:var(--warn); } .ok { color:var(--ok); }
   #intro { position:absolute; inset:0; display:grid; place-items:center; color:var(--dim); text-align:center; padding:24px; }
-  #intro div { max-width:520px; } #intro p { margin:6px 0; }
+  #intro div { max-width:560px; } #intro p { margin:6px 0; }
   kbd { background:#2f333c; border:1px solid var(--line); border-radius:3px; padding:0 4px; font:inherit; }
-  @media (max-width:800px) { main { grid-template-columns:1fr; grid-template-rows:1fr 220px; } aside { border-left:0; border-top:1px solid var(--line); } }
+  @media (max-width:800px) { main { grid-template-columns:1fr; grid-template-rows:1fr 260px; } aside { border-left:0; border-top:1px solid var(--line); } }
 </style>
 </head>
 <body>
@@ -59,14 +63,28 @@
     <canvas id="map" width="800" height="608"></canvas>
     <div id="intro"><div>
       <p><b>Load your own dump of The Urbz: Sims in the City (GBA, BOCE).</b></p>
-      <p>Everything runs in this page; the ROM never leaves your machine. Pick a district, choose a layer or Collision, click a piece on the right and paint it onto the map. Right-click a map cell to pick up what is there. Export writes a UPS patch you can apply with any patcher (or the bundled <code>gba_patchfile.py</code>).</p>
-      <p><kbd>Ctrl+Z</kbd> undo, <kbd>Ctrl+Y</kbd> redo, drag to paint. Collision colours: red blocks, green is pavement the Sim walks on, blue is a special edge or step, unpainted is open.</p>
+      <p>Everything runs in this page; the ROM never leaves your machine. Pick a district, choose a layer or Collision, click a piece on the right and paint it onto the map. Right-click a map cell to pick up what is there. The <i>Piece editor</i> tab redefines the selected piece tile by tile from the district's tile bank. Export writes a UPS patch you can apply with any patcher.</p>
+      <p><kbd>Ctrl+Z</kbd> undo, <kbd>Ctrl+Y</kbd> redo, drag to paint. Collision colours: red blocks, green is pavement the Sim walks on, blue is a special edge or step, unpainted is open. Pieces marked with a dot are not used anywhere in the district and are safe to redefine.</p>
     </div></div>
   </div>
   <aside>
-    <div class="tabs"><button id="tabPieces" class="on">Pieces</button></div>
-    <div id="pickwrap"><canvas id="picker" width="272" height="64"></canvas></div>
-    <div id="sel">No ROM loaded.</div>
+    <div class="tabs"><button id="tabPieces" class="on" data-pane="panePieces">Pieces</button><button id="tabPiece" data-pane="panePiece">Piece editor</button></div>
+    <div id="panePieces" class="pane on">
+      <div id="pickwrap"><canvas id="picker" width="272" height="64"></canvas></div>
+      <div id="sel">No ROM loaded.</div>
+    </div>
+    <div id="panePiece" class="pane">
+      <div class="row"><canvas id="piece" width="128" height="128"></canvas>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <label>Palette <select id="palbank"></select></label>
+          <label><input type="checkbox" id="hflip"> H flip</label>
+          <label><input type="checkbox" id="vflip"> V flip</label>
+          <label>Tile <input type="number" id="tilenum" min="0" value="0"> <button id="settile">Set</button></label>
+        </div>
+      </div>
+      <div id="bankwrap"><canvas id="bank" width="256" height="64"></canvas></div>
+      <div id="pieceinfo">Select a layer piece, then a slot in the 4x4 grid, then click a tile in the bank.</div>
+    </div>
   </aside>
 </main>
 <footer><span id="rominfo">—</span><span id="hover"></span><span id="space"></span><span id="status"></span></footer>
@@ -75,7 +93,8 @@
 (function () {
   const C = UrbzCore;
   const $ = (id) => document.getElementById(id);
-  const S = { base: null, rom: null, recs: [], rec: null, level: null, edits: new Map(), undo: [], redo: [], sel: 0, mode: "0", zoom: 2, painting: false, lastCell: -1, thumbs: [null, null, null], collThumbs: null };
+  const S = { base: null, rom: null, recs: [], rec: null, level: null, pristine: null, edits: new Map(), undo: [], redo: [], sel: 0, mode: "0", zoom: 2,
+              painting: false, lastCell: -1, thumbs: [null, null, null], collThumbs: null, slot: 0, bankPal: 0, bankCanvasPal: -1, used: [null, null, null] };
   const COLL_RGBA = [[0, 0, 0, 0], [230, 60, 60, 150], [70, 200, 110, 110], [80, 140, 255, 150]];
 
   // ---------------------------------------------------------------- loading
@@ -89,7 +108,7 @@
     $("rominfo").innerHTML = `${info.title} (${info.code}) ${(info.size / 1048576) | 0} MB ${hash ? (known ? '<span class="ok">known dump</span>' : '<span class="warn">unknown dump, addresses may be off</span>') : ""}`;
     S.recs = C.records(S.rom);
     const sel = $("district"); sel.innerHTML = "";
-    S.recs.forEach((r, i) => { const o = document.createElement("option"); o.value = r; o.textContent = `#${i + 1}  0x${r.toString(16).toUpperCase()}`; sel.appendChild(o); });
+    S.recs.forEach((r, i) => { const o = document.createElement("option"); o.value = r; o.textContent = `#${i}  0x${r.toString(16).toUpperCase()}`; sel.appendChild(o); });
     sel.disabled = S.recs.length === 0; $("mode").disabled = false; $("export").disabled = false; $("exportrom").disabled = false;
     $("intro").style.display = "none";
     if (S.recs.length) openDistrict(S.recs[0]); else status("no district records found in this ROM", true);
@@ -105,12 +124,24 @@
   function openDistrict(rec) {
     S.rec = rec; $("district").value = rec;
     S.level = C.loadLevel(S.rom, rec);
-    S.pristine = { layers: S.level.layers.map((l) => (l ? l.cells : null)), collision: S.level.collision ? S.level.collision.cells : null };
+    S.pristine = { layers: S.level.layers.map((l) => (l ? l.cells : null)), collision: S.level.collision ? S.level.collision.cells : null,
+                   metas: S.level.layers.map((l) => (l ? { refs: l.refs, attrs: l.attrs } : null)) };
     const e = S.edits.get(rec);
-    if (e) { for (let L = 0; L < 3; L++) if (e.layers[L] && S.level.layers[L]) S.level.layers[L].cells = e.layers[L]; if (e.collision && S.level.collision) S.level.collision.cells = e.collision; }
-    S.thumbs = S.level.layers.map((lay, L) => lay ? buildThumbs(lay, L === 0) : null);
+    if (e) {
+      for (let L = 0; L < 3; L++) {
+        if (!S.level.layers[L]) continue;
+        if (e.layers[L]) S.level.layers[L].cells = e.layers[L];
+        if (e.metas[L]) { S.level.layers[L].refs = e.metas[L].refs; S.level.layers[L].attrs = e.metas[L].attrs; }
+      }
+      if (e.collision && S.level.collision) S.level.collision.cells = e.collision;
+    }
+    S.thumbs = S.level.layers.map((lay, L) => (lay ? buildThumbs(lay, L === 0) : null));
     S.collThumbs = S.level.collision ? buildCollThumbs(S.level.collision) : null;
-    S.sel = 0; buildPicker(); drawMap(); showSel();
+    S.bankCanvasPal = -1; S.sel = 0; S.slot = 0;
+    computeUsed(); buildPicker(); drawMap(); showSel(); drawPiece(); drawBank();
+  }
+  function computeUsed() {
+    S.used = S.level.layers.map((lay) => { if (!lay) return null; const u = new Uint8Array(lay.n); for (const c of lay.cells) if (c < lay.n) u[c] = 1; return u; });
   }
 
   // Per-metatile 32x32 RGBA thumbnails on one sprite sheet canvas (16 per row).
@@ -119,7 +150,11 @@
     const cv = document.createElement("canvas"); cv.width = cols * 32; cv.height = Math.max(1, rows) * 32;
     const ctx = cv.getContext("2d"); const img = ctx.createImageData(32, 32);
     for (let i = 0; i < lay.n; i++) { C.paintMetatile(S.level, lay, i, opaque, img.data); ctx.putImageData(img, (i % cols) * 32, ((i / cols) | 0) * 32); }
-    return { cv, cols, n: lay.n };
+    return { cv, cols, n: lay.n, img, ctx };
+  }
+  function refreshThumb(L, cid) {
+    const th = S.thumbs[L], lay = S.level.layers[L];
+    C.paintMetatile(S.level, lay, cid, L === 0, th.img.data); th.ctx.putImageData(th.img, (cid % th.cols) * 32, ((cid / th.cols) | 0) * 32);
   }
   function buildCollThumbs(coll) {
     const cols = 16, rows = Math.ceil(coll.count / cols);
@@ -129,8 +164,7 @@
       const x0 = (i % cols) * 32, y0 = ((i / cols) | 0) * 32;
       ctx.fillStyle = "#222"; ctx.fillRect(x0, y0, 32, 32);
       for (let k = 0; k < 16; k++) {
-        const c = COLL_RGBA[C.collisionClass(coll.metas[i * 16 + k])];
-        if (!c[3]) continue;
+        const c = COLL_RGBA[C.collisionClass(coll.metas[i * 16 + k])]; if (!c[3]) continue;
         ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${c[3] / 255})`; ctx.fillRect(x0 + (k & 3) * 8, y0 + (k >> 2) * 8, 8, 8);
       }
     }
@@ -178,7 +212,12 @@
     const cols = 8, rows = Math.ceil(th.n / cols);
     cv.width = cols * 34; cv.height = rows * 34;
     const ctx = cv.getContext("2d"); ctx.imageSmoothingEnabled = false; ctx.fillStyle = "#15171b"; ctx.fillRect(0, 0, cv.width, cv.height);
-    for (let i = 0; i < th.n; i++) ctx.drawImage(th.cv, (i % th.cols) * 32, ((i / th.cols) | 0) * 32, 32, 32, (i % cols) * 34 + 1, ((i / cols) | 0) * 34 + 1, 32, 32);
+    const used = S.mode === "c" ? null : S.used[curLayerIdx()];
+    for (let i = 0; i < th.n; i++) {
+      const x = (i % cols) * 34 + 1, y = ((i / cols) | 0) * 34 + 1;
+      ctx.drawImage(th.cv, (i % th.cols) * 32, ((i / th.cols) | 0) * 32, 32, 32, x, y, 32, 32);
+      if (used && !used[i]) { ctx.fillStyle = "rgba(255,180,84,0.9)"; ctx.beginPath(); ctx.arc(x + 28, y + 4, 3, 0, 7); ctx.fill(); }
+    }
     if (S.sel < th.n) { ctx.strokeStyle = "#5ec4ff"; ctx.lineWidth = 2; ctx.strokeRect((S.sel % cols) * 34 + 1, ((S.sel / cols) | 0) * 34 + 1, 32, 32); }
   }
   function showSel() {
@@ -186,10 +225,76 @@
     if (!th) { $("sel").textContent = "This district has no such layer."; return; }
     let extra = "";
     if (S.mode === "c" && S.level.collision) extra = " bytes: " + [...S.level.collision.metas.subarray(S.sel * 16, S.sel * 16 + 16)].map((b) => b.toString(16).padStart(2, "0")).join(" ");
+    else if (S.mode !== "c") { const lay = S.level.layers[curLayerIdx()]; let cnt = 0; for (const c of lay.cells) if (c === S.sel) cnt++; extra = cnt ? ` Used in ${cnt} cell(s) of this district.` : " Not used in this district."; }
     $("sel").textContent = `${S.mode === "c" ? "Collision piece" : "Metatile"} ${S.sel} of ${th.n}.${extra}`;
   }
 
-  // ---------------------------------------------------------------- editing
+  // ---------------------------------------------------------------- piece editor
+  function drawPiece() {
+    const cv = $("piece"), ctx = cv.getContext("2d"); ctx.imageSmoothingEnabled = false; ctx.fillStyle = "#15171b"; ctx.fillRect(0, 0, 128, 128);
+    const L = curLayerIdx(); if (L < 0 || !S.level || !S.thumbs[L]) { $("pieceinfo").textContent = "Pick a layer (not Collision) to edit its pieces."; return; }
+    const th = S.thumbs[L]; if (S.sel >= th.n) return;
+    ctx.drawImage(th.cv, (S.sel % th.cols) * 32, ((S.sel / th.cols) | 0) * 32, 32, 32, 0, 0, 128, 128);
+    ctx.strokeStyle = "rgba(255,255,255,0.25)"; for (let i = 1; i < 4; i++) { ctx.beginPath(); ctx.moveTo(i * 32 + .5, 0); ctx.lineTo(i * 32 + .5, 128); ctx.moveTo(0, i * 32 + .5); ctx.lineTo(128, i * 32 + .5); ctx.stroke(); }
+    ctx.strokeStyle = "#5ec4ff"; ctx.lineWidth = 2; ctx.strokeRect((S.slot & 3) * 32 + 1, (S.slot >> 2) * 32 + 1, 30, 30);
+    const lay = S.level.layers[L], i = S.sel * 16 + S.slot, a = lay.attrs[i];
+    $("tilenum").value = lay.refs[i]; $("hflip").checked = !!(a & 1); $("vflip").checked = !!(a & 2); $("palbank").value = (a >> 2) & 0xF;
+    if (S.bankPal !== ((a >> 2) & 0xF)) { S.bankPal = (a >> 2) & 0xF; drawBank(); }
+    $("pieceinfo").textContent = `Metatile ${S.sel}, slot ${S.slot}: tile ${lay.refs[i]} of ${S.level.nTiles}, palette ${(a >> 2) & 0xF}${a & 1 ? ", H flip" : ""}${a & 2 ? ", V flip" : ""}. Click a bank tile to put it here.`;
+  }
+  function drawBank() {
+    const cv = $("bank"); if (!S.level) return;
+    if (S.bankCanvasPal === S.bankPal && cv.width === 512) { highlightBank(); return; }
+    const cols = 16, n = S.level.nTiles, rows = Math.ceil(n / cols);
+    cv.width = cols * 16 + 256 - 256; cv.height = rows * 16;
+    const ctx = cv.getContext("2d"); ctx.imageSmoothingEnabled = false;
+    const sheet = document.createElement("canvas"); sheet.width = cols * 8; sheet.height = rows * 8;
+    const sctx = sheet.getContext("2d"); const img = sctx.createImageData(cols * 8, rows * 8); const d = img.data, pal = S.level.palette, td = S.level.tileData, pb = S.bankPal;
+    for (let t = 0; t < n; t++) {
+      const x0 = (t % cols) * 8, y0 = ((t / cols) | 0) * 8;
+      for (let i = 0; i < 64; i++) {
+        const idx = (td[t * 32 + (i >> 1)] >> ((i & 1) * 4)) & 0xF; const c = idx ? pal[pb * 16 + idx] : [24, 26, 30];
+        const o = ((y0 + (i >> 3)) * cols * 8 + x0 + (i & 7)) * 4; d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2]; d[o + 3] = 255;
+      }
+    }
+    sctx.putImageData(img, 0, 0); ctx.drawImage(sheet, 0, 0, cv.width, cv.height);
+    S.bankCanvasPal = S.bankPal; S.bankSheet = sheet; highlightBank();
+  }
+  function highlightBank() {
+    const cv = $("bank"), ctx = cv.getContext("2d"); if (!S.bankSheet) return;
+    ctx.drawImage(S.bankSheet, 0, 0, cv.width, cv.height);
+    const L = curLayerIdx(); if (L < 0) return;
+    const t = S.level.layers[L].refs[S.sel * 16 + S.slot]; ctx.strokeStyle = "#5ec4ff"; ctx.lineWidth = 2; ctx.strokeRect((t % 16) * 16 + 1, ((t / 16) | 0) * 16 + 1, 14, 14);
+  }
+  $("piece").addEventListener("mousedown", (ev) => { const r = $("piece").getBoundingClientRect(); const x = Math.floor((ev.clientX - r.left) / 32), y = Math.floor((ev.clientY - r.top) / 32); if (x >= 0 && x < 4 && y >= 0 && y < 4) { S.slot = y * 4 + x; drawPiece(); highlightBank(); } });
+  $("bank").addEventListener("mousedown", (ev) => {
+    const L = curLayerIdx(); if (L < 0) return; const r = $("bank").getBoundingClientRect();
+    const t = Math.floor((ev.clientY - r.top) / 16) * 16 + Math.floor((ev.clientX - r.left) / 16);
+    if (t >= 0 && t < S.level.nTiles) setSlot(t, attrFromControls());
+  });
+  const attrFromControls = () => ($("hflip").checked ? 1 : 0) | ($("vflip").checked ? 2 : 0) | ((+$("palbank").value & 0xF) << 2);
+  $("settile").addEventListener("click", () => { const t = +$("tilenum").value | 0; if (curLayerIdx() >= 0 && t >= 0 && t < S.level.nTiles) setSlot(t, attrFromControls()); });
+  for (const id of ["hflip", "vflip", "palbank"]) $(id).addEventListener("change", () => { const L = curLayerIdx(); if (L < 0) return; if (id === "palbank") { S.bankPal = +$("palbank").value & 0xF; drawBank(); } setSlot(S.level.layers[L].refs[S.sel * 16 + S.slot], attrFromControls()); });
+  for (let i = 0; i < 16; i++) { const o = document.createElement("option"); o.value = i; o.textContent = i; $("palbank").appendChild(o); }
+
+  function ensureMetaEdit(L) {
+    let e = S.edits.get(S.rec);
+    if (!e) { e = { rec: S.rec, layers: [null, null, null], collision: null, metas: [null, null, null], orig: S.pristine }; S.edits.set(S.rec, e); }
+    if (!e.metas[L]) { const lay = S.level.layers[L]; e.metas[L] = { refs: new Uint16Array(lay.refs), attrs: new Uint8Array(lay.attrs) }; lay.refs = e.metas[L].refs; lay.attrs = e.metas[L].attrs; }
+    return e;
+  }
+  function setSlot(tile, attr, record = true) {
+    const L = curLayerIdx(); const lay = S.level.layers[L]; const i = S.sel * 16 + S.slot;
+    if (lay.refs[i] === tile && lay.attrs[i] === attr) return;
+    ensureMetaEdit(L);
+    const ch = { kind: "meta", rec: S.rec, L, cid: S.sel, slot: S.slot, oldRef: lay.refs[i], oldAttr: lay.attrs[i], ref: tile, attr };
+    lay.refs[i] = tile; lay.attrs[i] = attr;
+    if (record) { S.undo.push([ch]); S.redo = []; }
+    afterMetaChange(L, S.sel);
+  }
+  function afterMetaChange(L, cid) { refreshThumb(L, cid); buildPicker(); drawMap(); drawPiece(); highlightBank(); refreshButtons(); updateSpace(); }
+
+  // ---------------------------------------------------------------- cell editing
   function cellAt(ev) {
     const r = $("map").getBoundingClientRect(); const lay = S.level.layers[0];
     const x = Math.floor((ev.clientX - r.left) / (32 * S.zoom)), y = Math.floor((ev.clientY - r.top) / (32 * S.zoom));
@@ -198,7 +303,7 @@
   function target() { return S.mode === "c" ? S.level.collision : S.level.layers[curLayerIdx()]; }
   function ensureEdit() {
     let e = S.edits.get(S.rec);
-    if (!e) { e = { rec: S.rec, layers: [null, null, null], collision: null, orig: S.pristine }; S.edits.set(S.rec, e); }
+    if (!e) { e = { rec: S.rec, layers: [null, null, null], collision: null, metas: [null, null, null], orig: S.pristine }; S.edits.set(S.rec, e); }
     if (S.mode === "c") { if (!e.collision) { e.collision = S.level.collision.cells = new Uint16Array(S.level.collision.cells); } }
     else { const L = curLayerIdx(); if (!e.layers[L]) { e.layers[L] = S.level.layers[L].cells = new Uint16Array(S.level.layers[L].cells); } }
   }
@@ -208,35 +313,40 @@
     S.lastCell = c.i;
     if (t.cells[c.i] === S.sel) return;
     ensureEdit(); const t2 = target();
-    stroke.push({ rec: S.rec, mode: S.mode, i: c.i, old: t2.cells[c.i], val: S.sel });
+    stroke.push({ kind: "cell", rec: S.rec, mode: S.mode, i: c.i, old: t2.cells[c.i], val: S.sel });
     t2.cells[c.i] = S.sel; drawMap();
   }
   const map = $("map");
   map.addEventListener("contextmenu", (e) => e.preventDefault());
   map.addEventListener("mousedown", (ev) => {
     if (!S.level) return; const c = cellAt(ev); if (!c) return;
-    if (ev.button === 2) { const t = target(); if (t) { S.sel = t.cells[c.i]; buildPicker(); showSel(); } return; }
+    if (ev.button === 2) { const t = target(); if (t) { S.sel = t.cells[c.i]; buildPicker(); showSel(); drawPiece(); highlightBank(); } return; }
     if (ev.button !== 0) return;
     S.painting = true; S.lastCell = -1; stroke = []; paint(c);
   });
   map.addEventListener("mousemove", (ev) => {
     if (!S.level) return; const c = cellAt(ev);
-    if (c) { const t = target(); const co = S.level.collision; $("hover").textContent = `cell (${c.x}, ${c.y})  metatile ${S.level.layers[0].cells[c.i]}${t && S.mode !== "0" && S.mode !== "c" ? " / " + t.cells[c.i] : ""}  collision ${co ? co.cells[c.i] : "-"}`; }
+    if (c) { const co = S.level.collision; $("hover").textContent = `cell (${c.x}, ${c.y})  pieces ${S.level.layers.map((l) => (l ? l.cells[c.i] : "-")).join("/")}  collision ${co ? co.cells[c.i] : "-"}`; }
     if (S.painting && c) paint(c);
   });
-  window.addEventListener("mouseup", () => { if (S.painting && stroke && stroke.length) { S.undo.push(stroke); S.redo = []; refreshButtons(); updateSpace(); } S.painting = false; stroke = null; });
+  window.addEventListener("mouseup", () => { if (S.painting && stroke && stroke.length) { S.undo.push(stroke); S.redo = []; computeUsed(); buildPicker(); refreshButtons(); updateSpace(); } S.painting = false; stroke = null; });
   $("picker").addEventListener("mousedown", (ev) => {
     const th = S.mode === "c" ? S.collThumbs : S.thumbs[curLayerIdx()]; if (!th) return;
     const r = $("picker").getBoundingClientRect(); const i = Math.floor((ev.clientY - r.top) / 34) * 8 + Math.floor((ev.clientX - r.left) / 34);
-    if (i >= 0 && i < th.n) { S.sel = i; buildPicker(); showSel(); }
+    if (i >= 0 && i < th.n) { S.sel = i; buildPicker(); showSel(); drawPiece(); highlightBank(); }
   });
   function applyStroke(st, useOld) {
     for (const ch of st) {
       if (ch.rec !== S.rec) openDistrict(ch.rec);
-      S.mode = ch.mode; $("mode").value = ch.mode; ensureEdit();
-      target().cells[ch.i] = useOld ? ch.old : ch.val;
+      if (ch.kind === "meta") {
+        S.mode = String(ch.L); $("mode").value = S.mode; S.sel = ch.cid; S.slot = ch.slot; ensureMetaEdit(ch.L);
+        const lay = S.level.layers[ch.L], i = ch.cid * 16 + ch.slot; lay.refs[i] = useOld ? ch.oldRef : ch.ref; lay.attrs[i] = useOld ? ch.oldAttr : ch.attr; refreshThumb(ch.L, ch.cid);
+      } else {
+        S.mode = ch.mode; $("mode").value = ch.mode; ensureEdit();
+        target().cells[ch.i] = useOld ? ch.old : ch.val;
+      }
     }
-    buildPicker(); showSel(); drawMap(); refreshButtons(); updateSpace();
+    computeUsed(); buildPicker(); showSel(); drawMap(); drawPiece(); highlightBank(); refreshButtons(); updateSpace();
   }
   $("undo").addEventListener("click", () => { const st = S.undo.pop(); if (st) { applyStroke(st, true); S.redo.push(st); refreshButtons(); } });
   $("redo").addEventListener("click", () => { const st = S.redo.pop(); if (st) { applyStroke(st, false); S.undo.push(st); refreshButtons(); } });
@@ -247,27 +357,42 @@
   function refreshButtons() { $("undo").disabled = !S.undo.length; $("redo").disabled = !S.redo.length; }
 
   // ---------------------------------------------------------------- view controls
-  $("mode").addEventListener("change", (e) => { S.mode = e.target.value; S.sel = 0; buildPicker(); showSel(); drawMap(); });
+  $("mode").addEventListener("change", (e) => { S.mode = e.target.value; S.sel = 0; S.slot = 0; buildPicker(); showSel(); drawMap(); drawPiece(); highlightBank(); });
   $("zoom").addEventListener("change", (e) => { S.zoom = +e.target.value; drawMap(); });
   for (const id of ["showL0", "showL1", "showL2", "showC", "showG"]) $(id).addEventListener("change", drawMap);
+  for (const b of document.querySelectorAll(".tabs button")) b.addEventListener("click", () => {
+    for (const x of document.querySelectorAll(".tabs button")) x.classList.toggle("on", x === b);
+    for (const p of document.querySelectorAll(".pane")) p.classList.toggle("on", p.id === b.dataset.pane);
+    if (b.dataset.pane === "panePiece") { drawPiece(); drawBank(); }
+  });
 
   // ---------------------------------------------------------------- export
-  // Only arrays that differ from the ROM's own data count as edits (so a fully undone stroke leaves nothing to export).
   const same = (a, b) => !a || !b || (a.length === b.length && a.every((v, i) => v === b[i]));
+  // Only data that differs from the ROM's own counts as an edit (a fully undone stroke leaves nothing to export).
   function edited() {
     const out = [];
     for (const e of S.edits.values()) {
       const layers = e.layers.map((c, L) => (c && !same(c, e.orig.layers[L]) ? c : null));
       const collision = e.collision && !same(e.collision, e.orig.collision) ? e.collision : null;
-      if (layers.some(Boolean) || collision) out.push({ rec: e.rec, layers, collision });
+      const metas = e.metas.map((m, L) => (m && e.orig.metas[L] && !(same(m.refs, e.orig.metas[L].refs) && same(m.attrs, e.orig.metas[L].attrs)) ? m : null));
+      if (layers.some(Boolean) || collision || metas.some(Boolean)) out.push({ rec: e.rec, layers, collision, metas });
     }
     return out;
   }
-  function build() { return C.applyEdits(S.rom, edited()); }
+  let buildCache = { key: "", res: null };
+  function build() {
+    const ed = edited(); const key = JSON.stringify(ed.map((e) => [e.rec, e.layers.map((c) => (c ? Array.from(c) : 0)), e.collision ? Array.from(e.collision) : 0, e.metas.map((m) => (m ? [Array.from(m.refs), Array.from(m.attrs)] : 0))]));
+    if (buildCache.key !== key) buildCache = { key, res: C.applyEdits(S.rom, ed) };
+    return buildCache.res;
+  }
+  let spaceTimer = null;
   function updateSpace() {
     if (!S.rom) return;
-    try { const r = build(); $("space").textContent = `${edited().length} district(s) edited, ${r.used} B of ${r.used + r.free} B free space used`; $("space").className = ""; }
-    catch (e) { $("space").textContent = e.message; $("space").className = "warn"; }
+    clearTimeout(spaceTimer);
+    spaceTimer = setTimeout(() => {
+      try { const r = build(); const inPlace = r.log.filter((l) => l.inPlace).length; $("space").textContent = `${edited().length} district(s) edited: ${r.log.length} blob(s), ${inPlace} in reclaimed slots, ${r.tailUsed} B of ${r.tailUsed + r.tailFree} B tail free space used`; $("space").className = ""; }
+      catch (e) { $("space").textContent = e.message; $("space").className = "warn"; }
+    }, 150);
   }
   function download(bytes, name) {
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" })); a.download = name; a.click();
@@ -283,8 +408,11 @@
   });
   function status(msg, warn) { $("status").textContent = msg; $("status").className = warn ? "warn" : ""; }
 
-  // test hook (Playwright): expose state
-  window.__editor = S; window.__editorApi = { openDistrict, build, drawMap, paintCell: (mode, i, val) => { S.mode = mode; $("mode").value = mode; buildPicker(); stroke = []; S.lastCell = -1; S.sel = val; paint({ i }); S.undo.push(stroke); stroke = null; showSel(); refreshButtons(); updateSpace(); } };
+  // test hook (headless browser test): expose state and a few actions
+  window.__editor = S;
+  window.__editorApi = { openDistrict, build, edited, drawMap,
+    paintCell: (mode, i, val) => { S.mode = mode; $("mode").value = mode; buildPicker(); stroke = []; S.lastCell = -1; S.sel = val; paint({ i }); S.undo.push(stroke); stroke = null; showSel(); refreshButtons(); updateSpace(); },
+    setMetaSlot: (L, cid, slot, tile, attr) => { S.mode = String(L); $("mode").value = S.mode; S.sel = cid; S.slot = slot; setSlot(tile, attr); } };
 })();
 </script>
 </body>
