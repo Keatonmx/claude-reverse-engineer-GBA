@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+# never commit ROMs or dumps
+*.gba
+*.zip
+*.sav
+*.ss[0-9]
