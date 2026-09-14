@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Urbz District Editor</title>
+<style>
+  :root { --bg:#1b1d22; --panel:#24272e; --line:#3a3e48; --fg:#e6e6e6; --dim:#9aa0ab; --acc:#5ec4ff; --warn:#ffb454; --ok:#7bd88f; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.4 system-ui, sans-serif; height:100vh; display:grid; grid-template-rows:auto 1fr auto; }
+  header { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; padding:8px 12px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { font-size:15px; margin:0 8px 0 0; font-weight:600; }
+  header label { display:inline-flex; gap:6px; align-items:center; color:var(--dim); }
+  select, button, input[type=number] { background:#2f333c; color:var(--fg); border:1px solid var(--line); border-radius:4px; padding:4px 8px; font:inherit; }
+  button:hover { border-color:var(--acc); cursor:pointer; }
+  button:disabled { opacity:.45; cursor:default; }
+  button.primary { background:#2b5d7d; }
+  input[type=file] { color:var(--dim); max-width:220px; }
+  main { display:grid; grid-template-columns:1fr 300px; min-height:0; }
+  #mapwrap { overflow:auto; position:relative; background:#111; }
+  #map { display:block; image-rendering:pixelated; cursor:crosshair; }
+  aside { border-left:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-height:0; }
+  aside .tabs { display:flex; border-bottom:1px solid var(--line); }
+  aside .tabs button { flex:1; border:0; border-radius:0; background:transparent; padding:8px; color:var(--dim); }
+  aside .tabs button.on { color:var(--fg); box-shadow:inset 0 -2px var(--acc); }
+  #pickwrap { overflow:auto; flex:1; padding:6px; }
+  #picker { display:block; image-rendering:pixelated; cursor:pointer; }
+  #sel { padding:6px 10px; border-top:1px solid var(--line); color:var(--dim); min-height:44px; }
+  footer { display:flex; gap:16px; padding:6px 12px; background:var(--panel); border-top:1px solid var(--line); color:var(--dim); flex-wrap:wrap; }
+  footer .warn { color:var(--warn); } footer .ok { color:var(--ok); }
+  #intro { position:absolute; inset:0; display:grid; place-items:center; color:var(--dim); text-align:center; padding:24px; }
+  #intro div { max-width:520px; } #intro p { margin:6px 0; }
+  kbd { background:#2f333c; border:1px solid var(--line); border-radius:3px; padding:0 4px; font:inherit; }
+  @media (max-width:800px) { main { grid-template-columns:1fr; grid-template-rows:1fr 220px; } aside { border-left:0; border-top:1px solid var(--line); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Urbz District Editor</h1>
+  <label>ROM <input type="file" id="romfile" accept=".gba"></label>
+  <label>Patch <input type="file" id="upsfile" accept=".ups" title="Optional: apply a UPS patch to continue an earlier edit"></label>
+  <label>District <select id="district" disabled></select></label>
+  <label>Edit <select id="mode" disabled>
+    <option value="0">Ground (BG2)</option><option value="1">Middle (BG1)</option><option value="2">Top (BG0)</option><option value="c">Collision</option>
+  </select></label>
+  <label>Show
+    <input type="checkbox" id="showL0" checked> <span>ground</span> <input type="checkbox" id="showL1" checked> <span>middle</span>
+    <input type="checkbox" id="showL2" checked> <span>top</span> <input type="checkbox" id="showC"> <span>collision</span>
+    <input type="checkbox" id="showG" checked> <span>grid</span>
+  </label>
+  <label>Zoom <select id="zoom"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+  <button id="undo" disabled title="Ctrl+Z">Undo</button>
+  <button id="redo" disabled title="Ctrl+Y">Redo</button>
+  <button id="export" class="primary" disabled title="Download a UPS patch with every edited district">Export .ups</button>
+  <button id="exportrom" disabled title="Download the patched ROM for testing in an emulator">Patched .gba</button>
+</header>
+<main>
+  <div id="mapwrap">
+    <canvas id="map" width="800" height="608"></canvas>
+    <div id="intro"><div>
+      <p><b>Load your own dump of The Urbz: Sims in the City (GBA, BOCE).</b></p>
+      <p>Everything runs in this page; the ROM never leaves your machine. Pick a district, choose a layer or Collision, click a piece on the right and paint it onto the map. Right-click a map cell to pick up what is there. Export writes a UPS patch you can apply with any patcher (or the bundled <code>gba_patchfile.py</code>).</p>
+      <p><kbd>Ctrl+Z</kbd> undo, <kbd>Ctrl+Y</kbd> redo, drag to paint. Collision colours: red blocks, green is pavement the Sim walks on, blue is a special edge or step, unpainted is open.</p>
+    </div></div>
+  </div>
+  <aside>
+    <div class="tabs"><button id="tabPieces" class="on">Pieces</button></div>
+    <div id="pickwrap"><canvas id="picker" width="272" height="64"></canvas></div>
+    <div id="sel">No ROM loaded.</div>
+  </aside>
+</main>
+<footer><span id="rominfo">—</span><span id="hover"></span><span id="space"></span><span id="status"></span></footer>
+<script src="urbz-core.js"></script>
+<script>
+(function () {
+  const C = UrbzCore;
+  const $ = (id) => document.getElementById(id);
+  const S = { base: null, rom: null, recs: [], rec: null, level: null, edits: new Map(), undo: [], redo: [], sel: 0, mode: "0", zoom: 2, painting: false, lastCell: -1, thumbs: [null, null, null], collThumbs: null };
+  const COLL_RGBA = [[0, 0, 0, 0], [230, 60, 60, 150], [70, 200, 110, 110], [80, 140, 255, 150]];
+
+  // ---------------------------------------------------------------- loading
+  $("romfile").addEventListener("change", async (ev) => {
+    const f = ev.target.files[0]; if (!f) return;
+    S.base = new Uint8Array(await f.arrayBuffer()); S.rom = S.base; S.edits.clear(); S.undo = []; S.redo = [];
+    const info = C.romInfo(S.rom);
+    let hash = "";
+    try { if (crypto.subtle) { const h = await crypto.subtle.digest("SHA-1", S.base); hash = [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join(""); } } catch (e) { hash = ""; }
+    const known = hash === C.KNOWN_SHA1;
+    $("rominfo").innerHTML = `${info.title} (${info.code}) ${(info.size / 1048576) | 0} MB ${hash ? (known ? '<span class="ok">known dump</span>' : '<span class="warn">unknown dump, addresses may be off</span>') : ""}`;
+    S.recs = C.records(S.rom);
+    const sel = $("district"); sel.innerHTML = "";
+    S.recs.forEach((r, i) => { const o = document.createElement("option"); o.value = r; o.textContent = `#${i + 1}  0x${r.toString(16).toUpperCase()}`; sel.appendChild(o); });
+    sel.disabled = S.recs.length === 0; $("mode").disabled = false; $("export").disabled = false; $("exportrom").disabled = false;
+    $("intro").style.display = "none";
+    if (S.recs.length) openDistrict(S.recs[0]); else status("no district records found in this ROM", true);
+    updateSpace();
+  });
+  $("upsfile").addEventListener("change", async (ev) => {
+    const f = ev.target.files[0]; if (!f || !S.base) { status("load the ROM first", true); return; }
+    try { S.rom = C.upsApply(S.base, new Uint8Array(await f.arrayBuffer())); S.edits.clear(); S.undo = []; S.redo = []; S.recs = C.records(S.rom); openDistrict(S.rec || S.recs[0]); status("patch applied; edits continue from it"); updateSpace(); }
+    catch (e) { status(e.message, true); }
+  });
+  $("district").addEventListener("change", (e) => openDistrict(+e.target.value));
+
+  function openDistrict(rec) {
+    S.rec = rec; $("district").value = rec;
+    S.level = C.loadLevel(S.rom, rec);
+    S.pristine = { layers: S.level.layers.map((l) => (l ? l.cells : null)), collision: S.level.collision ? S.level.collision.cells : null };
+    const e = S.edits.get(rec);
+    if (e) { for (let L = 0; L < 3; L++) if (e.layers[L] && S.level.layers[L]) S.level.layers[L].cells = e.layers[L]; if (e.collision && S.level.collision) S.level.collision.cells = e.collision; }
+    S.thumbs = S.level.layers.map((lay, L) => lay ? buildThumbs(lay, L === 0) : null);
+    S.collThumbs = S.level.collision ? buildCollThumbs(S.level.collision) : null;
+    S.sel = 0; buildPicker(); drawMap(); showSel();
+  }
+
+  // Per-metatile 32x32 RGBA thumbnails on one sprite sheet canvas (16 per row).
+  function buildThumbs(lay, opaque) {
+    const cols = 16, rows = Math.ceil(lay.n / cols);
+    const cv = document.createElement("canvas"); cv.width = cols * 32; cv.height = Math.max(1, rows) * 32;
+    const ctx = cv.getContext("2d"); const img = ctx.createImageData(32, 32);
+    for (let i = 0; i < lay.n; i++) { C.paintMetatile(S.level, lay, i, opaque, img.data); ctx.putImageData(img, (i % cols) * 32, ((i / cols) | 0) * 32); }
+    return { cv, cols, n: lay.n };
+  }
+  function buildCollThumbs(coll) {
+    const cols = 16, rows = Math.ceil(coll.count / cols);
+    const cv = document.createElement("canvas"); cv.width = cols * 32; cv.height = Math.max(1, rows) * 32;
+    const ctx = cv.getContext("2d");
+    for (let i = 0; i < coll.count; i++) {
+      const x0 = (i % cols) * 32, y0 = ((i / cols) | 0) * 32;
+      ctx.fillStyle = "#222"; ctx.fillRect(x0, y0, 32, 32);
+      for (let k = 0; k < 16; k++) {
+        const c = COLL_RGBA[C.collisionClass(coll.metas[i * 16 + k])];
+        if (!c[3]) continue;
+        ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${c[3] / 255})`; ctx.fillRect(x0 + (k & 3) * 8, y0 + (k >> 2) * 8, 8, 8);
+      }
+    }
+    return { cv, cols, n: coll.count };
+  }
+
+  // ---------------------------------------------------------------- drawing
+  function curLayerIdx() { return S.mode === "c" ? -1 : +S.mode; }
+  function drawMap() {
+    const lvl = S.level; if (!lvl || !lvl.layers[0]) return;
+    const W = lvl.layers[0].w, H = lvl.layers[0].h, z = S.zoom;
+    const cv = $("map"); cv.width = W * 32 * z; cv.height = H * 32 * z;
+    const ctx = cv.getContext("2d"); ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cv.width, cv.height);
+    for (let L = 0; L < 3; L++) {
+      const lay = lvl.layers[L]; if (!lay || !$("showL" + L).checked) continue;
+      const th = S.thumbs[L];
+      for (let y = 0; y < lay.h; y++) for (let x = 0; x < lay.w; x++) {
+        const cid = lay.cells[y * lay.w + x]; if (cid >= th.n) continue;
+        ctx.drawImage(th.cv, (cid % th.cols) * 32, ((cid / th.cols) | 0) * 32, 32, 32, x * 32 * z, y * 32 * z, 32 * z, 32 * z);
+      }
+    }
+    if ((S.mode === "c" || $("showC").checked) && lvl.collision) {
+      const co = lvl.collision;
+      for (let y = 0; y < co.h; y++) for (let x = 0; x < co.w; x++) {
+        const cid = co.cells[y * co.w + x]; if (cid >= co.count) continue;
+        for (let k = 0; k < 16; k++) {
+          const c = COLL_RGBA[C.collisionClass(co.metas[cid * 16 + k])]; if (!c[3]) continue;
+          ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${c[3] / 255})`;
+          ctx.fillRect((x * 32 + (k & 3) * 8) * z, (y * 32 + (k >> 2) * 8) * z, 8 * z, 8 * z);
+        }
+      }
+    }
+    if ($("showG").checked) {
+      ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.lineWidth = 1; ctx.beginPath();
+      for (let x = 0; x <= W; x++) { ctx.moveTo(x * 32 * z + 0.5, 0); ctx.lineTo(x * 32 * z + 0.5, H * 32 * z); }
+      for (let y = 0; y <= H; y++) { ctx.moveTo(0, y * 32 * z + 0.5); ctx.lineTo(W * 32 * z, y * 32 * z + 0.5); }
+      ctx.stroke();
+    }
+  }
+  function buildPicker() {
+    const th = S.mode === "c" ? S.collThumbs : S.thumbs[curLayerIdx()];
+    const cv = $("picker");
+    if (!th) { cv.width = 272; cv.height = 32; cv.getContext("2d").clearRect(0, 0, 272, 32); return; }
+    const cols = 8, rows = Math.ceil(th.n / cols);
+    cv.width = cols * 34; cv.height = rows * 34;
+    const ctx = cv.getContext("2d"); ctx.imageSmoothingEnabled = false; ctx.fillStyle = "#15171b"; ctx.fillRect(0, 0, cv.width, cv.height);
+    for (let i = 0; i < th.n; i++) ctx.drawImage(th.cv, (i % th.cols) * 32, ((i / th.cols) | 0) * 32, 32, 32, (i % cols) * 34 + 1, ((i / cols) | 0) * 34 + 1, 32, 32);
+    if (S.sel < th.n) { ctx.strokeStyle = "#5ec4ff"; ctx.lineWidth = 2; ctx.strokeRect((S.sel % cols) * 34 + 1, ((S.sel / cols) | 0) * 34 + 1, 32, 32); }
+  }
+  function showSel() {
+    const th = S.mode === "c" ? S.collThumbs : S.thumbs[curLayerIdx()];
+    if (!th) { $("sel").textContent = "This district has no such layer."; return; }
+    let extra = "";
+    if (S.mode === "c" && S.level.collision) extra = " bytes: " + [...S.level.collision.metas.subarray(S.sel * 16, S.sel * 16 + 16)].map((b) => b.toString(16).padStart(2, "0")).join(" ");
+    $("sel").textContent = `${S.mode === "c" ? "Collision piece" : "Metatile"} ${S.sel} of ${th.n}.${extra}`;
+  }
+
+  // ---------------------------------------------------------------- editing
+  function cellAt(ev) {
+    const r = $("map").getBoundingClientRect(); const lay = S.level.layers[0];
+    const x = Math.floor((ev.clientX - r.left) / (32 * S.zoom)), y = Math.floor((ev.clientY - r.top) / (32 * S.zoom));
+    return x >= 0 && y >= 0 && x < lay.w && y < lay.h ? { x, y, i: y * lay.w + x } : null;
+  }
+  function target() { return S.mode === "c" ? S.level.collision : S.level.layers[curLayerIdx()]; }
+  function ensureEdit() {
+    let e = S.edits.get(S.rec);
+    if (!e) { e = { rec: S.rec, layers: [null, null, null], collision: null, orig: S.pristine }; S.edits.set(S.rec, e); }
+    if (S.mode === "c") { if (!e.collision) { e.collision = S.level.collision.cells = new Uint16Array(S.level.collision.cells); } }
+    else { const L = curLayerIdx(); if (!e.layers[L]) { e.layers[L] = S.level.layers[L].cells = new Uint16Array(S.level.layers[L].cells); } }
+  }
+  let stroke = null;
+  function paint(c) {
+    const t = target(); if (!t || c.i === S.lastCell) return;
+    S.lastCell = c.i;
+    if (t.cells[c.i] === S.sel) return;
+    ensureEdit(); const t2 = target();
+    stroke.push({ rec: S.rec, mode: S.mode, i: c.i, old: t2.cells[c.i], val: S.sel });
+    t2.cells[c.i] = S.sel; drawMap();
+  }
+  const map = $("map");
+  map.addEventListener("contextmenu", (e) => e.preventDefault());
+  map.addEventListener("mousedown", (ev) => {
+    if (!S.level) return; const c = cellAt(ev); if (!c) return;
+    if (ev.button === 2) { const t = target(); if (t) { S.sel = t.cells[c.i]; buildPicker(); showSel(); } return; }
+    if (ev.button !== 0) return;
+    S.painting = true; S.lastCell = -1; stroke = []; paint(c);
+  });
+  map.addEventListener("mousemove", (ev) => {
+    if (!S.level) return; const c = cellAt(ev);
+    if (c) { const t = target(); const co = S.level.collision; $("hover").textContent = `cell (${c.x}, ${c.y})  metatile ${S.level.layers[0].cells[c.i]}${t && S.mode !== "0" && S.mode !== "c" ? " / " + t.cells[c.i] : ""}  collision ${co ? co.cells[c.i] : "-"}`; }
+    if (S.painting && c) paint(c);
+  });
+  window.addEventListener("mouseup", () => { if (S.painting && stroke && stroke.length) { S.undo.push(stroke); S.redo = []; refreshButtons(); updateSpace(); } S.painting = false; stroke = null; });
+  $("picker").addEventListener("mousedown", (ev) => {
+    const th = S.mode === "c" ? S.collThumbs : S.thumbs[curLayerIdx()]; if (!th) return;
+    const r = $("picker").getBoundingClientRect(); const i = Math.floor((ev.clientY - r.top) / 34) * 8 + Math.floor((ev.clientX - r.left) / 34);
+    if (i >= 0 && i < th.n) { S.sel = i; buildPicker(); showSel(); }
+  });
+  function applyStroke(st, useOld) {
+    for (const ch of st) {
+      if (ch.rec !== S.rec) openDistrict(ch.rec);
+      S.mode = ch.mode; $("mode").value = ch.mode; ensureEdit();
+      target().cells[ch.i] = useOld ? ch.old : ch.val;
+    }
+    buildPicker(); showSel(); drawMap(); refreshButtons(); updateSpace();
+  }
+  $("undo").addEventListener("click", () => { const st = S.undo.pop(); if (st) { applyStroke(st, true); S.redo.push(st); refreshButtons(); } });
+  $("redo").addEventListener("click", () => { const st = S.redo.pop(); if (st) { applyStroke(st, false); S.undo.push(st); refreshButtons(); } });
+  window.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); $("undo").click(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); $("redo").click(); }
+  });
+  function refreshButtons() { $("undo").disabled = !S.undo.length; $("redo").disabled = !S.redo.length; }
+
+  // ---------------------------------------------------------------- view controls
+  $("mode").addEventListener("change", (e) => { S.mode = e.target.value; S.sel = 0; buildPicker(); showSel(); drawMap(); });
+  $("zoom").addEventListener("change", (e) => { S.zoom = +e.target.value; drawMap(); });
+  for (const id of ["showL0", "showL1", "showL2", "showC", "showG"]) $(id).addEventListener("change", drawMap);
+
+  // ---------------------------------------------------------------- export
+  // Only arrays that differ from the ROM's own data count as edits (so a fully undone stroke leaves nothing to export).
+  const same = (a, b) => !a || !b || (a.length === b.length && a.every((v, i) => v === b[i]));
+  function edited() {
+    const out = [];
+    for (const e of S.edits.values()) {
+      const layers = e.layers.map((c, L) => (c && !same(c, e.orig.layers[L]) ? c : null));
+      const collision = e.collision && !same(e.collision, e.orig.collision) ? e.collision : null;
+      if (layers.some(Boolean) || collision) out.push({ rec: e.rec, layers, collision });
+    }
+    return out;
+  }
+  function build() { return C.applyEdits(S.rom, edited()); }
+  function updateSpace() {
+    if (!S.rom) return;
+    try { const r = build(); $("space").textContent = `${edited().length} district(s) edited, ${r.used} B of ${r.used + r.free} B free space used`; $("space").className = ""; }
+    catch (e) { $("space").textContent = e.message; $("space").className = "warn"; }
+  }
+  function download(bytes, name) {
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" })); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+  $("export").addEventListener("click", () => {
+    try { const r = build(); download(C.upsMake(S.base, r.rom), "urbz-districts.ups"); status(`UPS written: ${r.log.length} blob(s) replaced`); }
+    catch (e) { status(e.message, true); }
+  });
+  $("exportrom").addEventListener("click", () => {
+    try { const r = build(); download(r.rom, "urbz-patched.gba"); status("patched ROM written (for your own testing)"); }
+    catch (e) { status(e.message, true); }
+  });
+  function status(msg, warn) { $("status").textContent = msg; $("status").className = warn ? "warn" : ""; }
+
+  // test hook (Playwright): expose state
+  window.__editor = S; window.__editorApi = { openDistrict, build, drawMap, paintCell: (mode, i, val) => { S.mode = mode; $("mode").value = mode; buildPicker(); stroke = []; S.lastCell = -1; S.sel = val; paint({ i }); S.undo.push(stroke); stroke = null; showSel(); refreshButtons(); updateSpace(); } };
+})();
+</script>
+</body>
+</html>

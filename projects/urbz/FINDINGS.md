@@ -117,10 +117,10 @@ go through a lighting stage before reaching hardware. Finding the palette source
    pointer change. Money/skill gain constants live in the functions those tables reference.
 5. **Lighting and palette hacks** — *hours*. The remap LUT used by `0x08015E58` controls tint; patching it yields
    night/sepia/colour-blind modes without touching any asset.
-6. **District/level editor** — *days*, **write-back path done** (section 7). The record format is fully decoded and
+6. **District/level editor** — **done** (`editor/`, write-back in section 7). The record format is fully decoded and
    verified against the running game, `urbz_level.py` renders any district in colour exactly as it appears on screen, and
    `urbz_patch.py` writes edited maps and collision back as BIOS LZ77 blobs in free space with a UPS patch as output.
-   What remains is the editing UI and, if the 32 KB tail runs out, a type-6 encoder or a smarter free-space plan.
+   Remaining: metatile/tile graphics editing, and a type-6 encoder or free-space reclaim if the 32 KB tail runs out.
 7. **Sound replacement** — *weeks*. Custom driver, raw 8-bit PCM at `0x1100000+`; sample swaps are feasible once the
    sample table is found, music sequencing would need the driver reversed.
 
@@ -179,5 +179,6 @@ every 60 frames from 4500; the district is under player control by frame 4600 (`
 - `urbz_codec.py` — decoders for header types 0-4 and 6 (`decode(rom, offset)`), CLI: `urbz_codec.py rom.gba 0xA054D4 out.bin`
 - `urbz_dump.py` — directory parser and exporter (`list`, `png`, `raw`)
 - `urbz_level.py` — level record parser and layer renderer (`list`, `render --layer N --crop --origin --zoom`)
+- `editor/` — browser district editor (`index.html` + `urbz-core.js`): renders any district, paints metatiles and collision, exports UPS; JS core verified against the Python tools (identical UPS, identical pixels)
 - `urbz_patch.py` — write-back: `demo` (the wall proof of concept), `replace rom out record field raw.bin`, `--ups out.ups`, `ups-apply`
 - `emu/probe26_walltest.txt` — harness script: power-on state → district → through the dialogue → walk Left and Down with register dumps

@@ -195,3 +195,6 @@ hung". Record the exact route through such dialogues once and keep the script wi
 - Verify against the running game before trusting any renderer, and identify what is loaded by its least-shared data.
 - A type-dispatching loader is a free write-back path: store edits in the BIOS format it already accepts.
 - Prove a patch three ways (RAM copy, frame, behaviour) with the control ROM run through the identical input script.
+- An editor is a port of the verified decoders and the write-back into one browser page (klo-gba.js pattern): keep the
+  logic in a module that also loads in Node, and test it against the Python tools (same patch bytes, same pixels) and
+  the UI in headless Chromium before shipping. The Urbz editor took a few hours once the format was proven.
