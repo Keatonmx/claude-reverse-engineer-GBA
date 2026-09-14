@@ -109,6 +109,8 @@ Cite evidence for every row (the breakpoint that fired, the value that changed).
 - Chained compression: decode Huffman then LZ77; encode LZ77 then Huffman. The bundled `--chain` peels layers automatically.
 - Saving a bigger asset in place corrupts the next asset; the failure shows up in a *different* level.
 - IPS offsets are 24-bit: an edit past 16 MB silently cannot be expressed. Use UPS/BPS for 32 MB ROMs.
+- Asset banks that the game reads straight from ROM (a tile cache copying from the cartridge) cannot be compressed or
+  grown; check the spare-tile and blank-ROM budget before promising new graphics, and build "replace" tools when it is zero.
 - Scripted behavioural tests fail on the first blocking dialogue, not on your patch. Record the exact input route through
   menus and dialogues (long boxes may scroll with the D-pad before A closes them) and run the control ROM through the
   same script.

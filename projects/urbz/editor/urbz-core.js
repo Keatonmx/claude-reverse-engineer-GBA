@@ -412,6 +412,117 @@
   }
   function bytesEqual(a, b) { if (a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; }
 
+
+  // ------------------------------------------------------------------ art import (reskin pieces in place)
+  // The tile bank is raw and read straight from ROM by the tile cache, and EA's pipeline left no unused tiles or
+  // pieces, so new art replaces the pixels of an existing piece's 16 tiles. Palettes are 16 banks x 16 BGR555 colours.
+  const rgb555 = (c) => [(c[0] >> 3) << 3, (c[1] >> 3) << 3, (c[2] >> 3) << 3];
+  const dist2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
+
+  // Detect the integer scale of a blocky upscaled image (largest k in 8,4,2 where every kxk block is flat).
+  function detectScale(rgba, w, h) {
+    outer: for (const k of [8, 4, 2]) {
+      if (w % k || h % k) continue;
+      for (let y = 0; y < h; y += k) for (let x = 0; x < w; x += k) {
+        const o = (y * w + x) * 4;
+        for (let dy = 0; dy < k; dy++) for (let dx = 0; dx < k; dx++) { const p = ((y + dy) * w + x + dx) * 4; if (rgba[p] !== rgba[o] || rgba[p + 1] !== rgba[o + 1] || rgba[p + 2] !== rgba[o + 2] || rgba[p + 3] !== rgba[o + 3]) continue outer; }
+      }
+      return k;
+    }
+    return 1;
+  }
+  // Nearest-neighbour downscale by k (samples the block centre, so slightly noisy AI output still works).
+  function downscale(rgba, w, h, k) {
+    const W = Math.floor(w / k), H = Math.floor(h / k), out = new Uint8ClampedArray(W * H * 4), c = k >> 1;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const src = ((y * k + c) * w + x * k + c) * 4, dst = (y * W + x) * 4; out[dst] = rgba[src]; out[dst + 1] = rgba[src + 1]; out[dst + 2] = rgba[src + 2]; out[dst + 3] = rgba[src + 3]; }
+    return { rgba: out, w: W, h: H };
+  }
+  const isKey = (r, g, b, a) => a < 128 || (r >= 240 && g <= 32 && b >= 240);
+
+  // Median-cut to at most 15 colours (index 0 stays transparent). Returns 16 entries, entry 0 = [0,0,0].
+  function buildPalette(rgba, maxColours = 15) {
+    const seen = new Map();
+    for (let i = 0; i < rgba.length; i += 4) { if (isKey(rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3])) continue; const c = rgb555([rgba[i], rgba[i + 1], rgba[i + 2]]); const k = (c[0] << 16) | (c[1] << 8) | c[2]; seen.set(k, (seen.get(k) || 0) + 1); }
+    let boxes = [[...seen.entries()].map(([k, n]) => ({ c: [k >> 16, (k >> 8) & 255, k & 255], n }))];
+    while (boxes.length < maxColours) {
+      boxes.sort((a, b) => b.length - a.length); const box = boxes[0]; if (box.length < 2) break;
+      const ranges = [0, 1, 2].map((ch) => Math.max(...box.map((p) => p.c[ch])) - Math.min(...box.map((p) => p.c[ch])));
+      const ch = ranges.indexOf(Math.max(...ranges)); box.sort((a, b) => a.c[ch] - b.c[ch]);
+      const total = box.reduce((s, p) => s + p.n, 0); let acc = 0, cut = 0; while (cut < box.length - 1 && acc < total / 2) acc += box[cut++].n;
+      boxes.splice(0, 1, box.slice(0, cut), box.slice(cut));
+    }
+    const pal = [[0, 0, 0]];
+    for (const box of boxes) { if (!box.length) continue; const n = box.reduce((s, p) => s + p.n, 0); pal.push(rgb555([0, 1, 2].map((ch) => Math.round(box.reduce((s, p) => s + p.c[ch] * p.n, 0) / n)))); }
+    while (pal.length < 16) pal.push([0, 0, 0]);
+    return pal;
+  }
+
+  // Quantize one 8x8 tile against a 16-colour bank (index 0 transparent). Returns {pixels: Uint8Array(64), error}.
+  function quantizeTile(rgba, w, x0, y0, bank) {
+    const px = new Uint8Array(64); let err = 0;
+    for (let i = 0; i < 64; i++) {
+      const x = x0 + (i & 7), y = y0 + (i >> 3), o = (y * w + x) * 4;
+      if (isKey(rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3])) { px[i] = 0; continue; }
+      const c = [rgba[o], rgba[o + 1], rgba[o + 2]]; let best = 1, bd = Infinity;
+      for (let k = 1; k < 16; k++) { const d = dist2(c, bank[k]); if (d < bd) { bd = d; best = k; } }
+      px[i] = best; err += bd;
+    }
+    return { pixels: px, error: err };
+  }
+  function packTile(px) { const out = new Uint8Array(32); for (let i = 0; i < 64; i += 2) out[i >> 1] = (px[i] & 15) | ((px[i + 1] & 15) << 4); return out; }
+
+  // Import a 32x32 (after downscale) image onto piece `cid` of layer L. opts: {scale: 0|1|2|4|8, palette: "auto" |
+  // bankIndex | {newInto: bankIndex}, banks: allowed bank indices for "auto"}. Mutates level.tileData / level.palette
+  // copies handed in via `out` ({tileData, palette}) and the layer's attrs; returns a report.
+  function importPiece(level, L, cid, rgba, w, h, opts, out) {
+    const k = opts.scale || detectScale(rgba, w, h);
+    let img = { rgba, w, h }; if (k > 1) img = downscale(rgba, w, h, k);
+    if (img.w < 32 || img.h < 32) throw new Error(`image is ${img.w}x${img.h} after dividing by ${k}; a piece needs 32x32`);
+    const lay = level.layers[L], palette = out.palette, tileData = out.tileData;
+    let banks;
+    if (opts.palette && typeof opts.palette === "object") {
+      const pal = buildPalette(img.rgba); const b = opts.palette.newInto;
+      for (let i = 0; i < 16; i++) palette[b * 16 + i] = pal[i];
+      banks = [b];
+    } else if (typeof opts.palette === "number") banks = [opts.palette];
+    else banks = opts.banks && opts.banks.length ? opts.banks : [...new Set([...Array(16).keys()].map((kk) => (lay.attrs[cid * 16 + kk] >> 2) & 15))];
+    const bankPal = (b) => palette.slice(b * 16, b * 16 + 16);
+    // how many other pieces (all layers) share each tile of this piece
+    const shared = [];
+    for (let kk = 0; kk < 16; kk++) {
+      const t = lay.refs[cid * 16 + kk]; let n = 0;
+      for (let L2 = 0; L2 < 3; L2++) { const l2 = level.layers[L2]; if (!l2) continue; for (let i = 0; i < l2.n * 16; i++) if (l2.refs[i] === t && !(L2 === L && (i >> 4) === cid)) n++; }
+      shared.push(n);
+    }
+    let totalErr = 0; const used = new Set(); const painted = new Map(); const duplicates = [];
+    for (let kk = 0; kk < 16; kk++) {
+      const x0 = (kk & 3) * 8, y0 = (kk >> 2) * 8; let best = null;
+      for (const b of banks) { const q = quantizeTile(img.rgba, img.w, x0, y0, bankPal(b)); if (!best || q.error < best.q.error) best = { q, b }; }
+      const t = lay.refs[cid * 16 + kk];
+      if (painted.has(t)) { duplicates.push(kk); lay.attrs[cid * 16 + kk] = lay.attrs[cid * 16 + painted.get(t)]; continue; } // a piece cannot hold two images in one tile
+      painted.set(t, kk);
+      tileData.set(packTile(best.q.pixels), t * 32);
+      lay.attrs[cid * 16 + kk] = (best.b << 2); // new art is stored unflipped
+      totalErr += best.q.error; used.add(best.b);
+    }
+    return { scale: k, banks: [...used], sharedTiles: shared.filter((n) => n > 0).length, shareCounts: shared, duplicateSlots: duplicates, meanError: Math.sqrt(totalErr / 1024) };
+  }
+
+  // How private a piece's tiles are: distinct tiles, and how many of them no other piece (any layer) uses.
+  function pieceStats(level, L, cid) {
+    const lay = level.layers[L]; const tiles = new Set(); for (let kk = 0; kk < 16; kk++) tiles.add(lay.refs[cid * 16 + kk]);
+    const others = new Map();
+    for (let L2 = 0; L2 < 3; L2++) { const l2 = level.layers[L2]; if (!l2) continue; for (let i = 0; i < l2.n * 16; i++) { const t = l2.refs[i]; if (tiles.has(t) && !(L2 === L && (i >> 4) === cid)) others.set(t, (others.get(t) || 0) + 1); } }
+    return { distinct: tiles.size, exclusive: tiles.size - others.size, sharedUses: [...others.values()].reduce((a, b) => a + b, 0) };
+  }
+  // Pieces of a layer ranked as reskin targets: 16 distinct tiles first, then most exclusive, then least placed.
+  function bestTargets(level, L, limit = 20) {
+    const lay = level.layers[L]; const placed = new Int32Array(lay.n); for (const c of lay.cells) if (c < lay.n) placed[c]++;
+    const rows = []; for (let cid = 0; cid < lay.n; cid++) { const st = pieceStats(level, L, cid); rows.push({ cid, ...st, placed: placed[cid] }); }
+    rows.sort((a, b) => (b.distinct - a.distinct) || (b.exclusive - a.exclusive) || (a.placed - b.placed));
+    return rows.slice(0, limit);
+  }
+
   // ------------------------------------------------------------------ write-back
   function freeSpaceStart(rom) {
     let last = rom.length - 1;
@@ -471,9 +582,14 @@
         if (e.metas && e.metas[L]) jobs.push({ rec: e.rec, field: F_LAYERS[L] + 4, label: "metatiles" + L, blob: encodeBest(serializeMetatiles(lay.metaRaw, lay.n, e.metas[L].refs, e.metas[L].attrs), true) });
       }
       if (e.collision && level.collision) jobs.push({ rec: e.rec, field: F_COLL_MAP, label: "collision", blob: encodeBest(serializeCells(level.collision.raw, e.collision), true) });
+      if (e.tileData) { // raw bank: header kept, pixels replaced; same size so it goes back into its own slot
+        const bank = ptr(rom, e.rec + F_BANK); const blob = new Uint8Array(4 + e.tileData.length); blob.set(rom.subarray(bank, bank + 4)); blob.set(e.tileData, 4);
+        jobs.push({ rec: e.rec, field: F_BANK, label: "tilebank", blob });
+      }
+      if (e.palette) { const blob = new Uint8Array(512); for (let i = 0; i < 256; i++) { const c = e.palette[i]; const v = (c[0] >> 3) | ((c[1] >> 3) << 5) | ((c[2] >> 3) << 10); blob[i * 2] = v & 0xFF; blob[i * 2 + 1] = v >> 8; } jobs.push({ rec: e.rec, field: F_PALETTE, label: "palette", blob, rawExtent: 512 }); }
     }
     // release every replaced blob first, then place (a blob may land in its own old slot when it fits)
-    for (const j of jobs) { j.old = u32(out, j.rec + j.field); const off = j.old - ROM_BASE; try { alloc.free(off, blobExtent(rom, off)); } catch (err) { /* unknown extent: do not reclaim */ } }
+    for (const j of jobs) { j.old = u32(out, j.rec + j.field); const off = j.old - ROM_BASE; try { alloc.free(off, j.rawExtent || blobExtent(rom, off)); } catch (err) { /* unknown extent: do not reclaim */ } }
     jobs.sort((a, b) => b.blob.length - a.blob.length); // largest first: best fit then wastes the least
     for (const j of jobs) {
       const addr = alloc.alloc(j.blob.length);
@@ -496,5 +612,5 @@
   return { ROM_BASE, F_LAYERS, F_COLL_META, F_COLL_MAP, F_OBJECTS, F_BANK, F_PALETTE, KNOWN_SHA1, u16, u32, ptr,
            decodeType6, lz77Decode, rleDecode, unfilter16, decode, records, decodePalette, loadLevel, paintMetatile, collisionClass,
            lz77Encode, filter16, encodeType6, encodeBest, blobExtent, Allocator, crc32, upsMake, upsApply, freeSpaceStart,
-           serializeCells, serializeMetatiles, applyEdits, romInfo };
+           serializeCells, serializeMetatiles, applyEdits, romInfo, detectScale, downscale, buildPalette, quantizeTile, packTile, importPiece, pieceStats, bestTargets };
 });

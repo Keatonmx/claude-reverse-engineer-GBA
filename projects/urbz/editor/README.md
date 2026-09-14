@@ -11,6 +11,12 @@ Open `index.html` in any modern browser (no server, no build step, nothing leave
 - **Piece editor.** The second tab shows the selected piece as a 4x4 grid of 8x8 tiles. Click a slot, then click a tile
   in the district's tile bank (or type its number), with palette bank and H/V flip. Every cell using that piece
   updates at once. The piece count is fixed (the game allocates RAM for it), so redefine unused pieces to add new art.
+- **Import art.** The third tab loads a PNG (any size that is an integer upscale of 32x32; magenta or alpha =
+  transparent), converts it to the hardware's rules and paints it onto the selected piece: grid detection, colour
+  quantization to an existing palette bank or a new 15-colour palette in a bank you choose, 4bpp tiles written into the
+  district's tile bank. The report lists scale, palette, colour error, shared tiles and duplicate slots. *Suggest a
+  private piece* picks a piece whose 16 tiles no other piece uses. See `ART-BRIEF.md` for the prompt to give an image
+  model. Tile banks cannot grow (they are fully used and read straight from ROM), so art always replaces a piece.
 - **Collision colours.** Red blocks the Sim (byte `0x03`), green is pavement the Sim walks on (`0x40`, `0x43`), blue marks
   special edge/step values, unpainted is open (`0x00`). These meanings were confirmed by a scripted walk test in mGBA.
 - **Undo/redo** with the buttons or Ctrl+Z / Ctrl+Y. Strokes across several districts are one history.
@@ -27,8 +33,8 @@ byte-exactly, with the Diff16 pre-filter the game uses for maps and pieces) or, 
 without the filter flag; each candidate is decoded back before it may win. Because every district blob is referenced
 exactly once, the bytes of a replaced blob are reclaimed and edits are placed best-fit, largest first, into those slots;
 the ROM's 32 KB zero tail is the fallback. The footer shows how many blobs landed in reclaimed slots and how much of the
-tail is used. Only which pieces go where, the collision grid and the piece definitions change; the 8x8 tile art and the
-palettes are read-only for now.
+tail is used. Which pieces go where, the collision grid, the piece definitions, the tile pixels (through Import art) and the
+district palettes (a new bank per import) can all change; sprites and HUD graphics are still read-only.
 
 ## Files
 
@@ -36,5 +42,6 @@ palettes are read-only for now.
   level model, piece painter, type-6 and LZ77 encoders, blob extents, the reclaiming allocator, UPS make/apply. Also
   loads in Node.
 - `index.html` — the UI. `window.__editorApi` is a small hook used by the headless browser test.
-- `test/core_test.js rom.gba` — round-trips all 480 type-6 district blobs through the encoders and checks a full edit.
+- `test/core_test.js rom.gba` — round-trips all 480 type-6 district blobs through the encoders, checks a full edit, and imports a synthetic 8x asset onto a private piece.
+- `ART-BRIEF.md` — the prompt and constraints for image models producing art for the importer.
 - `test/ui_test.js rom.gba [out.ups]` — drives the page in headless Chromium (needs `playwright`; set `CHROME`).

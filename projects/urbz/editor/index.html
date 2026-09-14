@@ -68,7 +68,7 @@
     </div></div>
   </div>
   <aside>
-    <div class="tabs"><button id="tabPieces" class="on" data-pane="panePieces">Pieces</button><button id="tabPiece" data-pane="panePiece">Piece editor</button></div>
+    <div class="tabs"><button id="tabPieces" class="on" data-pane="panePieces">Pieces</button><button id="tabPiece" data-pane="panePiece">Piece editor</button><button id="tabImport" data-pane="paneImport">Import art</button></div>
     <div id="panePieces" class="pane on">
       <div id="pickwrap"><canvas id="picker" width="272" height="64"></canvas></div>
       <div id="sel">No ROM loaded.</div>
@@ -84,6 +84,18 @@
       </div>
       <div id="bankwrap"><canvas id="bank" width="256" height="64"></canvas></div>
       <div id="pieceinfo">Select a layer piece, then a slot in the 4x4 grid, then click a tile in the bank.</div>
+    </div>
+    <div id="paneImport" class="pane">
+      <div class="row"><label>PNG <input type="file" id="artfile" accept=".png,image/png"></label></div>
+      <div class="row">
+        <label>Scale <select id="artscale"><option value="0">auto</option><option>1</option><option>2</option><option>4</option><option>8</option></select></label>
+        <label>Colours <select id="artpal"><option value="auto">piece's own banks</option><option value="new">new palette into bank</option><option value="bank">existing bank</option></select></label>
+        <label><select id="artbank"></select></label>
+      </div>
+      <div class="row"><span id="arttarget" style="color:var(--dim)">Target: the piece selected in the Pieces tab.</span> <button id="artsuggest">Suggest a private piece</button></div>
+      <div class="row"><canvas id="artpreview" width="128" height="128" style="image-rendering:pixelated;background:#15171b"></canvas>
+        <div style="flex:1;min-width:120px"><button id="artapply" class="primary" disabled>Apply to piece</button><div id="artreport" style="color:var(--dim);margin-top:6px;white-space:pre-line"></div></div></div>
+      <div id="artinfo" style="padding:6px 10px;color:var(--dim)">Art replaces the pixels of the selected piece's 16 tiles in the district's tile bank (the bank cannot grow). Tiles shared with other pieces change everywhere; pick a piece whose tiles are private, or use Suggest. Transparent = magenta or alpha.</div>
     </div>
   </aside>
 </main>
@@ -125,7 +137,7 @@
     S.rec = rec; $("district").value = rec;
     S.level = C.loadLevel(S.rom, rec);
     S.pristine = { layers: S.level.layers.map((l) => (l ? l.cells : null)), collision: S.level.collision ? S.level.collision.cells : null,
-                   metas: S.level.layers.map((l) => (l ? { refs: l.refs, attrs: l.attrs } : null)) };
+                   metas: S.level.layers.map((l) => (l ? { refs: l.refs, attrs: l.attrs } : null)), tileData: S.level.tileData, palette: S.level.palette.map((c) => c.slice()) };
     const e = S.edits.get(rec);
     if (e) {
       for (let L = 0; L < 3; L++) {
@@ -134,6 +146,8 @@
         if (e.metas[L]) { S.level.layers[L].refs = e.metas[L].refs; S.level.layers[L].attrs = e.metas[L].attrs; }
       }
       if (e.collision && S.level.collision) S.level.collision.cells = e.collision;
+      if (e.tileData) S.level.tileData = e.tileData;
+      if (e.palette) S.level.palette = e.palette;
     }
     S.thumbs = S.level.layers.map((lay, L) => (lay ? buildThumbs(lay, L === 0) : null));
     S.collThumbs = S.level.collision ? buildCollThumbs(S.level.collision) : null;
@@ -338,6 +352,7 @@
   function applyStroke(st, useOld) {
     for (const ch of st) {
       if (ch.rec !== S.rec) openDistrict(ch.rec);
+      if (ch.kind === "art") { ensureMetaEdit(ch.L); applyArt(ch, useOld); continue; }
       if (ch.kind === "meta") {
         S.mode = String(ch.L); $("mode").value = S.mode; S.sel = ch.cid; S.slot = ch.slot; ensureMetaEdit(ch.L);
         const lay = S.level.layers[ch.L], i = ch.cid * 16 + ch.slot; lay.refs[i] = useOld ? ch.oldRef : ch.ref; lay.attrs[i] = useOld ? ch.oldAttr : ch.attr; refreshThumb(ch.L, ch.cid);
@@ -364,6 +379,7 @@
     for (const x of document.querySelectorAll(".tabs button")) x.classList.toggle("on", x === b);
     for (const p of document.querySelectorAll(".pane")) p.classList.toggle("on", p.id === b.dataset.pane);
     if (b.dataset.pane === "panePiece") { drawPiece(); drawBank(); }
+    if (b.dataset.pane === "paneImport") previewArt();
   });
 
   // ---------------------------------------------------------------- export
@@ -375,13 +391,15 @@
       const layers = e.layers.map((c, L) => (c && !same(c, e.orig.layers[L]) ? c : null));
       const collision = e.collision && !same(e.collision, e.orig.collision) ? e.collision : null;
       const metas = e.metas.map((m, L) => (m && e.orig.metas[L] && !(same(m.refs, e.orig.metas[L].refs) && same(m.attrs, e.orig.metas[L].attrs)) ? m : null));
-      if (layers.some(Boolean) || collision || metas.some(Boolean)) out.push({ rec: e.rec, layers, collision, metas });
+      const tileData = e.tileData && !same(e.tileData, e.orig.tileData) ? e.tileData : null;
+      const palette = e.palette && e.palette.some((c, i) => c[0] !== e.orig.palette[i][0] || c[1] !== e.orig.palette[i][1] || c[2] !== e.orig.palette[i][2]) ? e.palette : null;
+      if (layers.some(Boolean) || collision || metas.some(Boolean) || tileData || palette) out.push({ rec: e.rec, layers, collision, metas, tileData, palette });
     }
     return out;
   }
   let buildCache = { key: "", res: null };
   function build() {
-    const ed = edited(); const key = JSON.stringify(ed.map((e) => [e.rec, e.layers.map((c) => (c ? Array.from(c) : 0)), e.collision ? Array.from(e.collision) : 0, e.metas.map((m) => (m ? [Array.from(m.refs), Array.from(m.attrs)] : 0))]));
+    const ed = edited(); const key = JSON.stringify(ed.map((e) => [e.rec, e.layers.map((c) => (c ? Array.from(c) : 0)), e.collision ? Array.from(e.collision) : 0, e.metas.map((m) => (m ? [Array.from(m.refs), Array.from(m.attrs)] : 0)), e.tileData ? UrbzCore.crc32(e.tileData) : 0, e.palette ? JSON.stringify(e.palette) : 0]));
     if (buildCache.key !== key) buildCache = { key, res: C.applyEdits(S.rom, ed) };
     return buildCache.res;
   }
@@ -408,11 +426,74 @@
   });
   function status(msg, warn) { $("status").textContent = msg; $("status").className = warn ? "warn" : ""; }
 
+  // ---------------------------------------------------------------- art import
+  const A = { img: null, out: null, report: null, cid: -1, L: -1, attrsBefore: null };
+  for (let i = 0; i < 16; i++) { const o = document.createElement("option"); o.value = i; o.textContent = "bank " + i; $("artbank").appendChild(o); }
+  $("artbank").value = 1;
+  $("artfile").addEventListener("change", async (ev) => {
+    const f = ev.target.files[0]; if (!f) return;
+    const bmp = await createImageBitmap(f); const cv = document.createElement("canvas"); cv.width = bmp.width; cv.height = bmp.height;
+    const ctx = cv.getContext("2d"); ctx.drawImage(bmp, 0, 0); const d = ctx.getImageData(0, 0, cv.width, cv.height);
+    A.img = { rgba: d.data, w: cv.width, h: cv.height }; previewArt();
+  });
+  for (const id of ["artscale", "artpal", "artbank"]) $(id).addEventListener("change", previewArt);
+  $("artsuggest").addEventListener("click", () => {
+    const L = curLayerIdx(); if (L < 0 || !S.level) { status("pick a layer first", true); return; }
+    const t = C.bestTargets(S.level, L, 1)[0]; S.sel = t.cid; buildPicker(); showSel(); drawPiece(); highlightBank();
+    $("arttarget").textContent = `Target: piece ${t.cid} (${t.exclusive} of ${t.distinct} tiles private, placed ${t.placed}x).`; previewArt();
+  });
+  function previewArt() {
+    const L = curLayerIdx(); const ctx = $("artpreview").getContext("2d"); ctx.imageSmoothingEnabled = false; ctx.clearRect(0, 0, 128, 128);
+    $("artapply").disabled = true; A.out = null;
+    if (!S.level || L < 0) { $("artreport").textContent = "Pick a layer (not Collision)."; return; }
+    const st = C.pieceStats(S.level, L, S.sel); let placed = 0; for (const c of S.level.layers[L].cells) if (c === S.sel) placed++;
+    $("arttarget").textContent = `Target: piece ${S.sel} on this layer (${st.exclusive} of ${st.distinct} tiles private${st.sharedUses ? ", shared " + st.sharedUses + "x elsewhere" : ""}; placed ${placed}x, the new art shows at every placement).`;
+    if (!A.img) { $("artreport").textContent = "Load a PNG."; return; }
+    try {
+      // work on scratch copies so the preview never touches the level until Apply
+      const out = { tileData: new Uint8Array(S.level.tileData), palette: S.level.palette.map((c) => c.slice()) };
+      const lay = S.level.layers[L]; const attrsBefore = new Uint8Array(lay.attrs);
+      const mode = $("artpal").value; const bank = +$("artbank").value;
+      const opts = { scale: +$("artscale").value, palette: mode === "new" ? { newInto: bank } : mode === "bank" ? bank : "auto" };
+      const rep = C.importPiece(S.level, L, S.sel, A.img.rgba, A.img.w, A.img.h, opts, out);
+      const attrsAfter = new Uint8Array(lay.attrs); lay.attrs.set(attrsBefore); // restore; Apply re-applies
+      const tmp = { tileData: S.level.tileData, palette: S.level.palette }; S.level.tileData = out.tileData; S.level.palette = out.palette; lay.attrs.set(attrsAfter);
+      const img = ctx.createImageData(32, 32); C.paintMetatile(S.level, lay, S.sel, L === 0, img.data);
+      S.level.tileData = tmp.tileData; S.level.palette = tmp.palette; lay.attrs.set(attrsBefore);
+      const small = document.createElement("canvas"); small.width = 32; small.height = 32; small.getContext("2d").putImageData(img, 0, 0); ctx.drawImage(small, 0, 0, 128, 128);
+      A.out = out; A.report = rep; A.cid = S.sel; A.L = L; A.attrsAfter = attrsAfter; A.attrsBefore = attrsBefore;
+      $("artreport").textContent = `scale ${rep.scale}x, palette bank(s) ${rep.banks.join(",")}, colour error ${rep.meanError.toFixed(1)}/255` +
+        (rep.duplicateSlots.length ? `\n${rep.duplicateSlots.length} slot(s) reuse a tile already in this piece and show its image` : "") +
+        (rep.sharedTiles ? `\n${rep.sharedTiles} tile(s) are shared: other pieces change too` : "\nall tiles private to this piece") +
+        (L === 0 ? "\nground layer: transparent pixels show the backdrop colour" : "");
+      $("artapply").disabled = false;
+    } catch (e) { $("artreport").textContent = e.message; }
+  }
+  $("artapply").addEventListener("click", () => {
+    if (!A.out) return; const L = A.L, lay = S.level.layers[L];
+    ensureMetaEdit(L); const e = S.edits.get(S.rec);
+    if (!e.tileData) e.tileData = S.level.tileData = new Uint8Array(S.level.tileData);
+    if (!e.palette) e.palette = S.level.palette = S.level.palette.map((c) => c.slice());
+    const ch = { kind: "art", rec: S.rec, L, cid: A.cid, oldTiles: new Uint8Array(S.level.tileData), oldPal: S.level.palette.map((c) => c.slice()), oldAttrs: new Uint8Array(lay.attrs),
+                 tiles: A.out.tileData, pal: A.out.palette, attrs: A.attrsAfter };
+    applyArt(ch, false); S.undo.push([ch]); S.redo = []; refreshButtons(); updateSpace(); status(`art applied to piece ${A.cid}`);
+  });
+  function applyArt(ch, useOld) {
+    const e = S.edits.get(ch.rec); const lay = S.level.layers[ch.L];
+    S.level.tileData.set(useOld ? ch.oldTiles : ch.tiles); e.tileData = S.level.tileData;
+    const pal = useOld ? ch.oldPal : ch.pal; for (let i = 0; i < 256; i++) S.level.palette[i] = pal[i].slice(); e.palette = S.level.palette;
+    lay.attrs.set(useOld ? ch.oldAttrs : ch.attrs);
+    S.thumbs = S.level.layers.map((l, L) => (l ? buildThumbs(l, L === 0) : null)); S.bankCanvasPal = -1;
+    buildPicker(); drawMap(); drawPiece(); drawBank(); previewArt();
+  }
+
   // test hook (headless browser test): expose state and a few actions
   window.__editor = S;
   window.__editorApi = { openDistrict, build, edited, drawMap,
     paintCell: (mode, i, val) => { S.mode = mode; $("mode").value = mode; buildPicker(); stroke = []; S.lastCell = -1; S.sel = val; paint({ i }); S.undo.push(stroke); stroke = null; showSel(); refreshButtons(); updateSpace(); },
-    setMetaSlot: (L, cid, slot, tile, attr) => { S.mode = String(L); $("mode").value = S.mode; S.sel = cid; S.slot = slot; setSlot(tile, attr); } };
+    setMetaSlot: (L, cid, slot, tile, attr) => { S.mode = String(L); $("mode").value = S.mode; S.sel = cid; S.slot = slot; setSlot(tile, attr); },
+    importArt: (L, cid, rgba, w, h, mode, bank) => { S.mode = String(L); $("mode").value = S.mode; S.sel = cid; A.img = { rgba: Uint8ClampedArray.from(rgba), w, h }; $("artpal").value = mode; $("artbank").value = bank; previewArt(); $("artapply").click(); return A.report; },
+    bestTargets: (L, n) => C.bestTargets(S.level, L, n) };
 })();
 </script>
 </body>

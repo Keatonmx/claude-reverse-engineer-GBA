@@ -130,8 +130,8 @@ go through a lighting stage before reaching hardware. Finding the palette source
 5. **Lighting and palette hacks** — *hours*. The remap LUT used by `0x08015E58` controls tint; patching it yields
    night/sepia/colour-blind modes without touching any asset.
 6. **District/level editor** — **done** (`editor/`, write-back in section 7): all 71 districts, three layers, collision,
-   piece (metatile) redefinition from the tile bank, type-6 re-encoding, slot reclaim, UPS export. Remaining: editing the
-   8x8 tile art itself (the bank is raw 4bpp, so this is a pixel editor plus a size check) and object placement.
+   piece (metatile) redefinition from the tile bank, type-6 re-encoding, slot reclaim, UPS export. Art import replaces a piece's tiles from a PNG with a new palette bank. Remaining: sprite and HUD art (sprite
+   directory + object palettes), palette editing by hand, and object placement.
 7. **Sound replacement** — *weeks*. Custom driver, raw 8-bit PCM at `0x1100000+`; sample swaps are feasible once the
    sample table is found, music sequencing would need the driver reversed.
 
@@ -184,6 +184,14 @@ Verified with `emu/probe26_walltest.txt` on the original and the patched ROM:
 - The UPS patch is 365 bytes with the type-6 encoder (1,416 with LZ77) and re-applies to the original dump byte-exactly.
 - A metatile edit (all 16 tiles of piece 156 replaced through `UrbzCore.applyEdits`) shows up in the emulator frame at
   exactly the expected 32x32 screen rectangle, and the RAM copy of the metatile blob equals the edited data.
+- **Art import (done).** EA's pipeline left nothing spare: in every district checked, every tile of the bank is used by a
+  placed piece, every piece is placed, and the ROM has no blank region larger than the 32 KB tail, while tile banks are
+  10-758 KB and are read straight from ROM by the tile cache (so they cannot be compressed or grown). New art therefore
+  replaces an existing piece's tiles in place; `bestTargets` ranks pieces by how private their tiles are (district 62 has
+  pieces with 16 exclusive tiles). A synthetic 8x-upscaled PNG imported through the editor (scale detection, magenta
+  key, median-cut palette into unused bank 1, per-tile quantization, raw bank and palette written back into their own
+  slots) renders in the emulator with 0 of 590 visible pixels off against the source. Palette banks 1 and 2 are unused
+  in district 62; most districts use all 16.
 
 Collision map layout, corrected: `u16 count` (number of collision metatiles, 74 here), `u16 0`, then `width*height` u16
 metatile ids using the visual map's width and height (25x19); each collision metatile is 16 bytes = 4x4 cells of 8x8 px.

@@ -178,6 +178,13 @@ the header word (256/512/1024 buckets). The ROM entries are static markers; the 
 tell-tale signs were a fixed set of three total sizes independent of map size, mostly-zero rows, and a `next` field of
 small integers.
 
+**Art budgets.** Before promising "new graphics", measure the budget: count tiles referenced by placed pieces against
+the bank size, pieces placed against pieces defined, palette banks referenced, and blank regions in the ROM. The Urbz
+had zero spare tiles, zero spare pieces, and no blank region above 32 KB, while its tile banks are read directly from
+ROM by the tile cache and so cannot be compressed or grown. The honest feature is therefore "replace a piece's art",
+with a ranking of pieces by how private their tiles are, and a converter that turns any PNG (including AI output at an
+integer upscale) into grid-snapped, palette-quantized 4bpp tiles with a report of what changed.
+
 The behavioural test cost more than the patch: the district opens with a scripted dialogue whose long boxes scroll line
 by line with the D-pad and only close on A once fully shown. Every input cadence that ignored this looked like "the game
 hung". Record the exact route through such dialogues once and keep the script with the project.
@@ -219,6 +226,8 @@ hung". Record the exact route through such dialogues once and keep the script wi
   alignment rules and never-exercised branches. Collect token-path statistics over shipped data to see which branches
   the translation has actually verified.
 - A record field that decodes to sparse fixed-size rows with a small integer link field is a hash map, not a list.
+- Measure the asset budget (spare tiles, pieces, palettes, blank ROM) before promising new graphics; commercial
+  pipelines often leave nothing, and then "new art" means "replace art" plus a converter and a privacy ranking.
 - Prove a patch three ways (RAM copy, frame, behaviour) with the control ROM run through the identical input script.
 - An editor is a port of the verified decoders and the write-back into one browser page (klo-gba.js pattern): keep the
   logic in a module that also loads in Node, and test it against the Python tools (same patch bytes, same pixels) and
